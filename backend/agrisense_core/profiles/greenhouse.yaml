@@ -1,0 +1,97 @@
+# Greenhouse definition. All values in SI units unless the key says otherwise.
+name: AgriSense Demo Greenhouse
+id: gh1
+
+location:
+  latitude_deg: 6.9          # Colombo, Sri Lanka
+  longitude_deg: 79.86
+  utc_offset_hours: 5.5
+  elevation_m: 5
+
+simulation:
+  start: "2026-03-21T00:00:00"   # local clock time
+  step_s: 1.0                    # physics sub-step (keep <= 10 s)
+  seed: 42
+
+weather:
+  temp_mean_c: 27.5
+  temp_amplitude_c: 3.5          # half of the day/night swing on a clear day
+  dewpoint_c: 23.0
+  cloud_mean: 0.45               # 0 clear .. 1 overcast
+  cloud_volatility: 0.15
+  wind_mean_ms: 2.5
+  rain_probability_per_hour: 0.03
+  rain_intensity_mm_h: 8.0
+  rain_duration_h: 1.5
+  co2_outside_ppm: 420
+
+cover:
+  material: polyethylene
+  u_value_w_m2k: 6.0             # single-layer PE film
+  transmissivity: 0.75           # fraction of solar radiation reaching the canopy
+  absorbed_fraction: 0.8         # fraction of transmitted radiation absorbed inside
+
+structure:
+  leakage_ach: 1.0               # air changes per hour with fans off (at 0 wind)
+  wind_leakage_ach_per_ms: 0.3   # extra leakage per m/s of wind
+  thermal_mass_j_m2k: 15000      # canopy, benches, structure (per m2 floor)
+
+tank:
+  id: tank1
+  capacity_l: 2000
+  initial_level_pct: 80
+  height_m: 1.5
+  catchment_area_m2: 150         # roof area draining to the tank
+  catchment_efficiency: 0.8
+
+pump:
+  id: pump1
+  max_flow_lpm: 15
+  power_w: 60
+  startup_delay_s: 2
+
+zones:
+  - id: A
+    name: Zone A
+    crop: tomato
+    stage: fruiting
+    length_m: 10
+    width_m: 5
+    height_m: 3
+    initial_vwc: 0.30
+    soil: {type: loam, field_capacity: 0.30, wilting_point: 0.12, saturation: 0.45}
+    equipment:
+      fan: {count: 2, airflow_m3h: 3750, power_w: 120, startup_delay_s: 3}
+      valve: {power_w: 5, startup_delay_s: 1}
+      emitters: {count: 125, flow_lph: 2.0}
+      grow_light: {ppfd_umol_m2s: 150, power_w: 3000, startup_delay_s: 1}
+      mister: {flow_lph: 20, power_w: 40, startup_delay_s: 2}
+  - id: B
+    name: Zone B
+    crop: chilli
+    stage: fruiting
+    length_m: 10
+    width_m: 5
+    height_m: 3
+    initial_vwc: 0.27
+    soil: {type: loam, field_capacity: 0.30, wilting_point: 0.12, saturation: 0.45}
+    equipment:
+      fan: {count: 2, airflow_m3h: 3750, power_w: 120, startup_delay_s: 3}
+      valve: {power_w: 5, startup_delay_s: 1}
+      emitters: {count: 150, flow_lph: 1.6}
+      grow_light: {ppfd_umol_m2s: 150, power_w: 3000, startup_delay_s: 1}
+  - id: C
+    name: Zone C
+    crop: lettuce
+    stage: vegetative
+    length_m: 10
+    width_m: 5
+    height_m: 3
+    initial_vwc: 0.33
+    soil: {type: loam, field_capacity: 0.34, wilting_point: 0.14, saturation: 0.48}
+    equipment:
+      fan: {count: 2, airflow_m3h: 3750, power_w: 120, startup_delay_s: 3}
+      valve: {power_w: 5, startup_delay_s: 1}
+      emitters: {count: 200, flow_lph: 1.0}
+      grow_light: {ppfd_umol_m2s: 200, power_w: 4000, startup_delay_s: 1}
+      mister: {flow_lph: 20, power_w: 40, startup_delay_s: 2}

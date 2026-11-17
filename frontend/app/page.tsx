@@ -15,7 +15,7 @@ export default async function Home() {
     <main className="mx-auto max-w-5xl px-4 py-10 font-sans">
       <h1 className="text-3xl font-semibold">AgriSense</h1>
       <p className="mt-1 text-sm opacity-70">
-        Smart greenhouse simulation &amp; automation platform — Phase 0 scaffold
+        Smart greenhouse simulation &amp; automation platform (dashboard arrives in Phase 3)
       </p>
 
       <section className="mt-6 rounded-lg border border-black/10 p-4 dark:border-white/15">
@@ -26,7 +26,7 @@ export default async function Home() {
               ● {health.app} API v{health.version} is {health.status}
             </span>
           ) : (
-            <span className="text-red-600">● Backend unreachable — start it with uvicorn</span>
+            <span className="text-red-600">● Backend unreachable: start it with uvicorn</span>
           )}
         </p>
       </section>

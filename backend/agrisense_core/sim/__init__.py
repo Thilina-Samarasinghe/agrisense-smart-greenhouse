@@ -1,1 +1,1 @@
-"""Physics-based greenhouse simulation (weather, energy, vapour, CO2, soil water). Phase 1."""
+"""Physics-based greenhouse simulation: clock, weather, zone physics, engine and scenarios."""

@@ -1,0 +1,16 @@
+# Sensor installation. Each zone gets the `zone` set; `greenhouse` sensors are shared.
+# source: sim  -> simulated hardware model (now)
+# source: mqtt -> real device publishing to MQTT (Phase 6)
+zone:
+  - {id: air,   model: sht31,       source: sim, sample_interval_s: 5}
+  - {id: soil1, model: capacitive_soil, source: sim, sample_interval_s: 10,
+     calibration: {raw_at_vwc0: 3300, raw_at_vwc50: 1400}}
+  - {id: soil2, model: capacitive_soil, source: sim, sample_interval_s: 10,
+     calibration: {raw_at_vwc0: 3250, raw_at_vwc50: 1450}}
+  - {id: soilt, model: ds18b20,     source: sim, sample_interval_s: 30}
+  - {id: light, model: bh1750,      source: sim, sample_interval_s: 5}
+  - {id: co2,   model: scd30,       source: sim, sample_interval_s: 5}
+greenhouse:
+  - {id: outside, model: sht31,     source: sim, sample_interval_s: 30}
+  - {id: tank,    model: jsn_sr04t, source: sim, sample_interval_s: 10}
+  - {id: flow,    model: yf_s201,   source: sim, sample_interval_s: 5}

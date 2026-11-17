@@ -1,0 +1,43 @@
+# Crop profiles per growth stage.
+#   lai            leaf area index (m2 leaf / m2 ground)
+#   root_depth_m   effective root-zone depth for the soil water balance
+#   rs_min_s_m     minimum stomatal resistance
+#   depletion_p    FAO-56 fraction of available water usable before stress
+#   pmax_umol_m2s  light-saturated canopy gross photosynthesis
+# Targets are indicative defaults: check local agronomic guidance for your variety.
+tomato:
+  display_name: Tomato
+  stages:
+    vegetative: {lai: 1.5, root_depth_m: 0.25, rs_min_s_m: 100, depletion_p: 0.4, pmax_umol_m2s: 18}
+    fruiting:   {lai: 3.0, root_depth_m: 0.35, rs_min_s_m: 100, depletion_p: 0.4, pmax_umol_m2s: 28}
+  targets:
+    temp_day_c: [21, 27]
+    temp_night_c: [16, 20]
+    rh_pct: [60, 80]
+    vwc: [0.25, 0.30]
+    dli_mol_m2d: [20, 30]
+    co2_ppm: [400, 1000]
+chilli:
+  display_name: Chilli
+  stages:
+    vegetative: {lai: 1.2, root_depth_m: 0.25, rs_min_s_m: 120, depletion_p: 0.45, pmax_umol_m2s: 16}
+    fruiting:   {lai: 2.5, root_depth_m: 0.30, rs_min_s_m: 120, depletion_p: 0.45, pmax_umol_m2s: 24}
+  targets:
+    temp_day_c: [21, 29]
+    temp_night_c: [17, 21]
+    rh_pct: [60, 75]
+    vwc: [0.22, 0.28]
+    dli_mol_m2d: [18, 25]
+    co2_ppm: [400, 1000]
+lettuce:
+  display_name: Lettuce
+  stages:
+    seedling:   {lai: 0.5, root_depth_m: 0.10, rs_min_s_m: 170, depletion_p: 0.3, pmax_umol_m2s: 10}
+    vegetative: {lai: 2.0, root_depth_m: 0.20, rs_min_s_m: 170, depletion_p: 0.3, pmax_umol_m2s: 18}
+  targets:
+    temp_day_c: [15, 21]
+    temp_night_c: [10, 16]
+    rh_pct: [60, 75]
+    vwc: [0.28, 0.34]
+    dli_mol_m2d: [12, 17]
+    co2_ppm: [400, 1000]

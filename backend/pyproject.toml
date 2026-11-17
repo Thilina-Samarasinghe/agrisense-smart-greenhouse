@@ -2,7 +2,6 @@
 name = "agrisense"
 version = "0.1.0"
 description = "Physics-based smart greenhouse simulation and automation platform"
-readme = "../README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -12,6 +11,9 @@ dependencies = [
     "numpy>=2.0",
     "pyyaml>=6.0",
 ]
+
+[project.scripts]
+agrisense = "agrisense_core.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -24,6 +26,9 @@ dev = [
 [build-system]
 requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+agrisense_core = ["profiles/*.yaml"]
 
 [tool.setuptools.packages.find]
 include = ["agrisense_core*", "app*"]
