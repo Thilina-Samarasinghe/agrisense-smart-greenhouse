@@ -4,8 +4,8 @@
 > automated irrigation, climate control, environmental analytics and AI-driven agricultural optimisation.
 > Built **hardware-independent today, hardware-ready for tomorrow.**
 
-**Status:** Phase 1 (physics simulation engine) implemented. Next: Phase 2, the automation engine.
-See the [Roadmap](#-roadmap).
+**Status:** Phase 1 (physics simulation) and Phase 2 (automation engine) implemented.
+Next: Phase 3, the API, storage and live dashboard. See the [Roadmap](#-roadmap).
 
 ---
 
@@ -20,7 +20,7 @@ See the [Roadmap](#-roadmap).
 7. [Simulated actuators and hydraulics](#-simulated-actuators-and-hydraulics)
 8. [Scenarios](#-scenarios)
 9. [Model validation](#-model-validation)
-10. [Automation & control logic (Phase 2)](#-automation--control-logic-phase-2)
+10. [Automation & control logic](#-automation--control-logic)
 11. [Greenhouse zones & crop profiles](#-greenhouse-zones--crop-profiles)
 12. [Configuration files](#-configuration-files)
 13. [Technology stack](#-technology-stack)
@@ -95,10 +95,16 @@ Legend: ✅ implemented, 🔜 planned.
 - Humidity spike, dry soil, water shortage, tank refill
 - Pump failure, any actuator fault, any sensor failure
 
-**Automation engine** 🔜 (Phase 2)
-- Ventilation, irrigation, grow lights, misting with **hysteresis** and minimum on/off times
-- Safety interlocks, modes (AUTO / MANUAL / OFF), timed manual override, **emergency stop**
-- Every decision logged with the rule and the readings that caused it
+**Automation engine** ✅
+- Controller sees only sensor readings from the message bus, never the true physics state
+- Staged fan ventilation, humidity venting, fan-and-fog misting, drip irrigation cycles,
+  DLI-based grow lights, heating, all with **hysteresis** and minimum on/off times
+- Safety interlocks: tank dry-run lockout, pump no-flow alarm, pump run limit, high-temperature
+  emergency, unexpected flow
+- Sensor health monitoring (stale, out of range, spikes, stuck, probe disagreement) with
+  fail-safe behaviour for every control loop
+- Modes (AUTO / MANUAL / OFF), timed manual override, latched **emergency stop**
+- Alerts (info / warning / critical, latched where dangerous) and an explained decision log
 
 **Dashboard & analytics** 🔜 (Phase 3)
 - Live zone monitoring, charts, manual controls, scenario panel, alerts
@@ -254,33 +260,115 @@ greenhouse behaviour. Results on a clear day in Colombo (latitude 6.9° N) with 
 | Water conservation | tank out = soil in + drainage + ET | exact (to 10⁻⁶) |
 | Same seed | identical results | yes |
 
-## 🧠 Automation & control logic (Phase 2)
+Closed-loop results (`backend/tests/test_control_scenarios.py`):
 
-Decisions will be evaluated in strict priority order:
+| Check | Without controller | With controller |
+|---|---|---|
+| Hot day (+5 °C), zone A peak temperature | 47.5 °C | 33.7 °C |
+| Hot day, peak rise above outside | 12.1 °C | 0.7 °C (fans plus fog cooling) |
+| Normal 72 h: irrigation | soil dries out | one cycle per zone when needed, VWC held in the crop band |
+| Normal 72 h: zone A fan switching | n/a | 37 changes in 3 days (no chatter) |
+
+## 🧠 Automation & control logic
+
+The controller (`backend/agrisense_core/control/`) only sees sensor readings arriving on the
+message bus and only acts by publishing actuator commands, exactly as it will with real ESP32
+hardware. Commands carry a 60 s time-to-live, so if the controller crashes every actuator
+switches itself off. Behaviour is configured in `profiles/control.yaml`; crop targets come from
+`profiles/crops.yaml`. The control loop runs every 10 simulated seconds.
+
+### Priority layers
+
+Every actuator is decided through strict layers on every tick:
 
 | Priority | Layer | Example |
 |---|---|---|
-| 1 | **Emergency stop** | All actuators OFF and latched until manually reset |
-| 2 | **Safety interlocks** | Tank < 10 %: pump locked out. Pump max run time. Failed sensor: fail-safe |
-| 3 | **Manual override** | User forces fan ON for 30 min, then it automatically returns to AUTO |
-| 4 | **Automatic rules** | Hysteresis bands: fan ON at 28 °C, OFF at 26 °C |
-| 5 | **Schedules** | Grow lights allowed 06:00 to 20:00 when the DLI target is not reached |
+| 1 | **Emergency stop** | All actuators OFF, latched until an operator resets it |
+| 2 | **Safety interlocks** | FORCE (fans to 100 % at 40 °C) or BLOCK (no pumping from a dry tank) |
+| 3 | **Operator mode** | MANUAL level, timed override (returns to AUTO by itself) or OFF |
+| 4 | **Automatic rules** | Crop-specific targets with hysteresis |
+| 5 | **Minimum on/off times** | Protect motors and relays (automatic decisions only) |
 
-Example rules (per-crop thresholds come from crop profiles):
+Interlock blocks also apply to manual commands: an operator cannot run the pump dry.
 
-| Condition | Action |
+### Automatic rules
+
+| Equipment | Rule |
 |---|---|
-| Temperature above upper limit | Ventilation ON |
-| Temperature back below (limit − hysteresis) | Ventilation OFF |
-| Soil moisture below threshold | Open zone valve and start pump |
-| Soil moisture reaches target | Stop irrigation |
-| Tank critically low | Disable irrigation, raise CRITICAL alert |
-| Light / DLI insufficient | Grow lights ON |
-| Pump running but flow meter reads zero | Stop pump, raise pump-failure alert |
-| Sensor stale or out of range | Mark sensor FAULT, loop goes to fail-safe, raise alert |
+| **Fans (temperature)** | Stage 1 (50 %) above the crop's day or night maximum, stage 2 (100 %) at max + 2 °C, OFF at max − 1.5 °C. Only switch on if inside is at least 1 °C warmer than outside (ventilation would not cool otherwise); stop if outside becomes 0.5 °C warmer than inside |
+| **Fans (humidity)** | Vent at RH > max + 5 %, until RH < max − 2.5 %, only if the outside air holds less water (absolute humidity check with its own hysteresis). Temperature has priority: never vent for humidity if it would heat a zone already above its maximum |
+| **Mister** | Fog cooling when temperature > max + 2 °C and RH < max − 5 % (pulse misting, fans kept running: fan-and-fog). Humidifies when RH < min − 5 % |
+| **Irrigation** | Valve opens when soil VWC (average of healthy probes) falls below the crop minimum, closes at min + 60 % of the band. A cycle longer than 3 h stops, soaks 15 min and raises `IRRIGATION_TIMEOUT` (leak, clogged emitters or misplaced probe). The pump runs whenever any valve is open |
+| **Grow lights** | Allowed 06:00 to 20:00. ON when the measured daily light integral falls behind a sun-shaped pace towards the crop minimum and the sun is weak; OFF when back on pace, the sun is bright or the minimum is reached. The controller subtracts the lamps' own light from the lux reading to estimate sunlight |
+| **Heater** | ON below the crop minimum, OFF at minimum + 1.5 °C (if a heater is configured) |
 
-Every action will be logged with an explanation, for example
-`Zone A · Fan ON · rule CLIMATE_HIGH_T · temp 29.4 °C > 28.0 °C`.
+### Safety interlocks
+
+| Interlock | Trigger | Action | Alert |
+|---|---|---|---|
+| Tank dry-run protection | Tank < 10 % (released above 15 %) | Pump, valves and misters blocked | `TANK_CRITICAL` (critical), `TANK_LOW` below 20 % |
+| Tank level unknown | No valid tank reading | Pump, valves and misters blocked | `TANK_LEVEL_UNKNOWN` (critical) |
+| Pump no-flow | Pump on > 30 s but flow meter < 0.5 L/min | Pump blocked until an operator resets the alarm | `PUMP_NO_FLOW` (critical, **latched**) |
+| Pump run limit | Pump on continuously for 4 h | 10 min rest | `PUMP_MAX_RUNTIME` |
+| Unexpected flow | Flow with the pump off | Alert only (stuck relay or leak) | `UNEXPECTED_FLOW` |
+| High temperature | Zone ≥ 40 °C (cleared at 37 °C) | Fans forced to 100 %, even in mode OFF | `HIGH_TEMP_EMERGENCY` (critical) |
+
+### Sensor health and fail-safes
+
+Every reading passes the health monitor (`control/health.py`) before the rules may use it:
+
+| Problem | Detection |
+|---|---|
+| Stale | No accepted reading for 30 s (or 3 sample intervals) |
+| Out of range | Outside physically plausible limits (`control.yaml`) |
+| Spikes | 3 jumps faster than physics allows within 5 min; spikes are never used. A genuine step change (three consistent new readings) is accepted |
+| Stuck | Value unchanged for 10 min on a quantity that always fluctuates |
+| Probe disagreement | The two soil probes of a bed differ by more than 6 % VWC |
+| Saturated | Still usable as a bound (e.g. BH1750 in full sun) |
+
+If a control loop loses its sensor it falls back to a safe behaviour and raises an alert:
+
+| Loop | Fail-safe |
+|---|---|
+| Climate (no air temperature) | Fans at 50 % by day, off at night; misting and heating off |
+| Irrigation (no soil moisture) | Timed irrigation: 10 min every 6 h |
+| Lighting (no light reading) | Grow lights off |
+| Tank (no level reading) | Pump locked out |
+
+Limitation: a slow drift or constant offset on a single sensor cannot be detected by rules alone.
+It is caught when redundant probes disagree, and later by the Phase 4 anomaly detector.
+
+### Alerts and decision log
+
+Alerts have a severity (`info`, `warning`, `critical`), are deduplicated, clear automatically when
+the cause is gone, and dangerous ones are **latched** (`PUMP_NO_FLOW`, `EMERGENCY_STOP`) until an
+operator resets them. Sustained out-of-range conditions (30 min) raise `TEMP_OUT_OF_RANGE` and
+`RH_OUT_OF_RANGE`.
+
+Every actuator change is recorded with its rule and readings, and published on
+`agrisense/{greenhouse}/control/decision`:
+
+```
+2026-03-22 11:00:25  Zone C · Valve ON · SOIL_LOW · VWC 27.9 % (start 28 %, stop 31.6 %)
+2026-03-22 11:00:25  Greenhouse · Pump ON · IRRIGATION_DEMAND · open valves: C.valve
+2026-03-21 08:49:25  Zone A · Fans ON · CLIMATE_VERY_HIGH_T · temp 29.0 degC > 29 degC, +1.3 degC vs outside
+2026-03-21 16:08:45  Zone A · Grow lights ON · DLI_DEFICIT · DLI 14.5/20 mol (pace 16.5), sun 299 umol
+```
+
+### Operator controls
+
+```python
+ctl = runtime.controller
+ctl.override("A.fan", 1.0, duration_s=1800, now=runtime.now)   # 30 min, then back to AUTO
+ctl.set_mode("C.mister", "off")                                 # AUTO | MANUAL | OFF
+ctl.emergency_stop(runtime.now, reason="maintenance")           # everything off, latched
+ctl.reset_emergency(runtime.now)
+ctl.reset_alarm("PUMP_NO_FLOW", runtime.now, scope="pump1")     # after repairing the pump
+```
+
+Note for the tropical default location: lettuce is a cool-season crop, so in lowland Colombo
+it stays above its temperature target at night and `TEMP_OUT_OF_RANGE` warnings are expected.
+That is the system correctly reporting a climate the equipment cannot fix.
 
 ## 🌾 Greenhouse zones & crop profiles
 
@@ -305,6 +393,7 @@ All in `backend/agrisense_core/profiles/`, validated by Pydantic on load (`confi
 | `greenhouse.yaml` | Location, simulation start/step/seed, weather climate, cover, structure, tank, pump, zones with soil and equipment specs |
 | `crops.yaml` | Crop growth stages and target ranges |
 | `sensors.yaml` | Sensors installed per zone and greenhouse-wide, with `source: sim` or `source: mqtt` and calibration |
+| `control.yaml` | Controller behaviour: loop interval, command TTL, hysteresis bands, irrigation cycle limits, lighting window, tank and pump limits, sensor health limits, minimum on/off times. Optional: defaults apply if missing |
 
 Default greenhouse: Colombo (6.9° N, 79.86° E, UTC+5:30), three zones of 10 m × 5 m × 3 m with a
 single-layer polyethylene cover, a 2,000 L tank and roof rain-water harvesting.
@@ -341,15 +430,22 @@ agrisense-smart-greenhouse/
 │   │   │   ├── bus.py             # in-process MQTT-style message bus
 │   │   │   ├── sensors.py         # hardware-accurate simulated sensors
 │   │   │   └── actuators.py       # simulated actuators with metering and faults
-│   │   ├── control/               # rule engine (Phase 2)
-│   │   ├── profiles/              # greenhouse.yaml, crops.yaml, sensors.yaml
+│   │   ├── control/
+│   │   │   ├── controller.py      # rules, interlocks, arbitration, decision log
+│   │   │   ├── health.py          # sensor health monitor
+│   │   │   ├── alerts.py          # alert manager (deduplicated, latched)
+│   │   │   ├── hysteresis.py      # hysteresis switch, minimum on/off times
+│   │   │   └── modes.py           # AUTO / MANUAL / OFF, timed overrides
+│   │   ├── profiles/              # greenhouse.yaml, crops.yaml, sensors.yaml, control.yaml
 │   │   ├── config.py              # Pydantic config schemas and loader
+│   │   ├── runtime.py             # simulator + controller closed loop
+│   │   ├── units.py               # light unit conversions
 │   │   └── cli.py                 # command-line simulator
 │   ├── app/                       # FastAPI application
 │   │   ├── api/  ws/  db/  services/
 │   │   ├── config.py
 │   │   └── main.py
-│   ├── tests/                     # 63 tests: physics validation, devices, engine, scenarios
+│   ├── tests/                     # 96 tests: physics validation, devices, engine, control
 │   └── pyproject.toml
 ├── frontend/                      # Next.js dashboard
 ├── ml/                            # Phase 4 experiments and models
@@ -374,7 +470,7 @@ python -m venv .venv
 pip install -e ".[dev]"
 cp .env.example .env
 uvicorn app.main:app --reload            # http://localhost:8000/docs
-pytest                                   # run all tests (about 30 s)
+pytest                                   # run all tests (about 90 s)
 ruff check . && ruff format --check .    # lint
 ```
 
@@ -382,30 +478,37 @@ ruff check . && ruff format --check .    # lint
 
 ```bash
 agrisense scenarios                                       # list scenarios
-agrisense simulate --hours 24 --out day.csv               # one day, CSV every sim-minute
-agrisense simulate --hours 48 --step 5 --fans-daytime --scenario hot_day --out hot.csv
+agrisense simulate --hours 24 --out day.csv               # closed loop, CSV every sim-minute
+agrisense simulate --hours 48 --scenario hot_day --log decisions.txt
+agrisense simulate --hours 24 --scenario water_shortage --scenario dry_soil --log log.txt
+agrisense simulate --hours 24 --no-control --fans-daytime # open loop: fans on a fixed timer
 agrisense simulate --hours 24 --seed 7 --config ./my-greenhouse
 ```
 
-The CSV contains the outside weather, tank level and, per zone, the true temperature, humidity,
-VPD, CO₂, soil moisture and temperature, PAR, DLI, transpiration, the SHT31 sensor reading and the
-actuator states. One simulated day takes about 9 seconds at a 5 s step.
+The controller is on by default. The CSV contains the outside weather, tank level and, per zone,
+the true temperature, humidity, VPD, CO₂, soil moisture and temperature, PAR, DLI, transpiration,
+the SHT31 sensor reading, the actuator states and the number of active alerts. `--log` writes
+every explained decision and alert. The summary prints temperature and VWC ranges, water use,
+equipment energy, decision counts and alerts. One simulated day takes about 12 seconds at a
+10 s step.
 
-`--fans-daytime` runs the fans from 07:00 to 18:00. It is a stand-in until the Phase 2 controller.
-
-### Use the engine from Python
+### Use it from Python
 
 ```python
-from agrisense_core.sim.engine import GreenhouseEngine
+from agrisense_core.runtime import GreenhouseRuntime
 
-engine = GreenhouseEngine(seed=42, step_s=5)
-engine.scenarios.start("hot_day")
-engine.command("A.fan", 1.0, reason="demo")
-engine.command("pump1", 1); engine.command("A.valve", 1, ttl_s=900)
-engine.run_for(6 * 3600)
-print(engine.snapshot()["zones"]["A"]["true"])
-print(engine.latest[("A.air", "air_temp")])        # what the SHT31 reports
+rt = GreenhouseRuntime(seed=42, step_s=10)           # simulator + controller
+rt.engine.scenarios.start("hot_day")
+rt.run_for(14 * 3600)
+for d in list(rt.controller.decisions)[-5:]:
+    print(d.message)                                  # explained decisions
+print(rt.controller.alerts.codes())                   # active alerts
+print(rt.engine.latest[("A.air", "air_temp")])       # what the SHT31 reports
+print(rt.snapshot()["zones"]["A"]["true"])           # what is really happening
 ```
+
+`GreenhouseEngine` (in `agrisense_core.sim.engine`) can also be used on its own, without the
+controller, sending commands with `engine.command("A.fan", 1.0)`.
 
 ### Frontend
 
@@ -424,7 +527,7 @@ The home page shows whether the backend is reachable.
 |---|---|---|
 | **0: Foundation** ✅ | Repo structure, tooling, backend & frontend skeletons, docs | Health endpoint, tests and lint pass; dashboard shows API status |
 | **1: Simulation engine** ✅ | Weather, physics per zone, actuator specs, sensor hardware models, device interfaces, scenarios, CLI | A simulated day is physically plausible, deterministic with a seed and validated by tests |
-| **2: Automation engine** | Rules, hysteresis, interlocks, modes, override, emergency stop, fault detection | Every scenario (hot day, water shortage, sensor failure, ...) passes as an automated test |
+| **2: Automation engine** ✅ | Rules, hysteresis, interlocks, modes, override, emergency stop, sensor health, fail-safes, alerts, decision log | Every scenario (hot day, water shortage, pump failure, sensor failure, ...) passes as an automated test |
 | **3: API, storage & dashboard** | REST + WebSocket, database, live dashboard, scenario panel, analytics | Click "Simulate hot day" and watch the fan react live with an explained log entry |
 | **4: Intelligence** | Anomaly detection, predictive irrigation, optimisation, crop advisor | Measured water/energy savings vs. rule-based control over a simulated week |
 | **5: Deployment & polish** | Docker Compose, PostgreSQL/TimescaleDB, CI, docs, demo | `docker compose up` runs the whole platform |

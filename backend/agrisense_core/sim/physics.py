@@ -24,12 +24,12 @@ from dataclasses import dataclass, field
 from agrisense_core.config import CropStage, GreenhouseConfig, ZoneConfig
 from agrisense_core.sim import psychro
 from agrisense_core.sim.weather import WeatherState
-
-# Radiation conversions
-PAR_UMOL_PER_W_GLOBAL = 2.06  # umol/m2/s PAR per W/m2 of global solar radiation (~45 % PAR)
-LUX_PER_W_GLOBAL = 110.0  # luminous efficacy of daylight
-LUX_PER_UMOL_LED = 70.0  # typical full-spectrum white LED
-J_PER_UMOL_PAR = 0.218  # radiant energy of 1 umol PAR photons
+from agrisense_core.units import (
+    J_PER_UMOL_PAR,
+    LUX_PER_UMOL_LED,
+    LUX_PER_W_GLOBAL,
+    PAR_UMOL_PER_W_GLOBAL,
+)
 
 # Canopy and exchange coefficients
 K_EXTINCTION = 0.7

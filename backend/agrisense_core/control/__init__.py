@@ -1,1 +1,1 @@
-"""Automation: rule engine, hysteresis, safety interlocks, operating modes. Phase 2."""
+"""Automation: sensor health, alerts, hysteresis, modes, interlocks and the controller."""

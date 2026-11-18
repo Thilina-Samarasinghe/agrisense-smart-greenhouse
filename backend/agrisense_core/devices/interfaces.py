@@ -6,7 +6,7 @@ contracts later, so the automation engine and the API never know which one they 
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
@@ -32,10 +32,17 @@ class Reading:
     ts: datetime
 
     def to_message(self) -> dict[str, Any]:
-        d = asdict(self)
-        d["ts"] = self.ts.isoformat()
-        d["quality"] = str(self.quality)
-        return d
+        # Built by hand: dataclasses.asdict deep-copies and is far too slow for every reading.
+        return {
+            "sensor_id": self.sensor_id,
+            "zone_id": self.zone_id,
+            "quantity": self.quantity,
+            "value": self.value,
+            "unit": self.unit,
+            "raw": self.raw,
+            "quality": str(self.quality),
+            "ts": self.ts.isoformat(),
+        }
 
 
 @dataclass(frozen=True)

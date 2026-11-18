@@ -235,6 +235,83 @@ class SensorLayout(_Model):
     greenhouse: list[SensorInstall]
 
 
+# --------------------------------------------------------------------------- control
+
+
+def hhmm_to_hours(value: str) -> float:
+    h, m = value.split(":")
+    return int(h) + int(m) / 60
+
+
+class ClimateControl(_Model):
+    temp_band_c: float = Field(default=1.5, gt=0)
+    stage1_level: float = Field(default=0.5, gt=0, le=1)
+    stage2_offset_c: float = Field(default=2.0, gt=0)
+    vent_benefit_on_c: float = Field(default=1.0, ge=0)
+    vent_benefit_off_c: float = -0.5
+    humidity_band_pct: float = Field(default=5.0, gt=0)
+    humidity_vent_start_ratio: float = Field(default=0.90, gt=0, le=1)
+    humidity_vent_stop_ratio: float = Field(default=0.98, gt=0, le=1)
+    emergency_temp_c: float = 40.0
+    emergency_clear_c: float = 37.0
+    mist_cooling_offset_c: float = Field(default=2.0, ge=0)
+    mist_rh_margin_pct: float = Field(default=5.0, ge=0)
+
+
+class IrrigationControl(_Model):
+    stop_fraction: float = Field(default=0.6, gt=0, le=1)
+    max_cycle_s: float = Field(default=10800, gt=0)
+    soak_s: float = Field(default=900, ge=0)
+    critical_dry_margin: float = Field(default=0.02, ge=0)
+    fallback_interval_s: float = Field(default=21600, gt=0)
+    fallback_duration_s: float = Field(default=600, gt=0)
+
+
+class LightingControl(_Model):
+    window: tuple[str, str] = ("06:00", "20:00")
+    off_above_sun_par: float = Field(default=400, gt=0)
+    sun_par_band: float = Field(default=50, ge=0)
+    deficit_on_fraction: float = Field(default=0.1, ge=0, le=1)
+
+
+class TankControl(_Model):
+    low_pct: float = 20
+    critical_pct: float = 10
+    release_pct: float = 15
+
+
+class PumpControl(_Model):
+    max_run_s: float = Field(default=14400, gt=0)
+    cooldown_s: float = Field(default=600, ge=0)
+    no_flow_grace_s: float = Field(default=30, gt=0)
+    no_flow_lpm: float = Field(default=0.5, ge=0)
+
+
+class SensorHealthControl(_Model):
+    stale_after_s: float = Field(default=30, gt=0)
+    stuck_window_s: float = Field(default=600, gt=0)
+    stuck_quantities: list[str] = ["air_temp", "air_rh", "soil_vwc", "co2_ppm"]
+    spike_limit: int = Field(default=3, ge=1)
+    spike_window_s: float = Field(default=300, gt=0)
+    disagreement_vwc_pct: float = Field(default=6.0, gt=0)
+    ranges: dict[str, tuple[float, float]] = {}
+    max_rate_per_s: dict[str, float] = {}
+
+
+class ControlConfig(_Model):
+    interval_s: float = Field(default=10, gt=0)
+    command_ttl_s: float = Field(default=60, gt=0)
+    day_window: tuple[str, str] = ("06:00", "18:30")
+    violation_sustain_s: float = Field(default=1800, gt=0)
+    climate: ClimateControl = ClimateControl()
+    irrigation: IrrigationControl = IrrigationControl()
+    lighting: LightingControl = LightingControl()
+    tank: TankControl = TankControl()
+    pump: PumpControl = PumpControl()
+    sensors: SensorHealthControl = SensorHealthControl()
+    min_times_s: dict[str, tuple[float, float]] = {}  # actuator kind -> (min ON, min OFF)
+
+
 # --------------------------------------------------------------------------- loading
 
 
@@ -242,6 +319,7 @@ class AgriSenseConfig(_Model):
     greenhouse: GreenhouseConfig
     crops: dict[str, CropProfile]
     sensors: SensorLayout
+    control: ControlConfig = ControlConfig()
 
     @model_validator(mode="after")
     def _crops_exist(self) -> AgriSenseConfig:
@@ -257,19 +335,24 @@ class AgriSenseConfig(_Model):
         return self.crops[zone.crop].stages[zone.stage]
 
 
-def _read_yaml(directory: Path | None, name: str) -> dict:
+def _read_yaml(directory: Path | None, name: str, optional: bool = False) -> dict:
     if directory is not None:
-        text = (directory / name).read_text(encoding="utf-8")
+        file = directory / name
+        if optional and not file.exists():
+            return {}
+        text = file.read_text(encoding="utf-8")
     else:
         text = resources.files("agrisense_core.profiles").joinpath(name).read_text(encoding="utf-8")
-    return yaml.safe_load(text)
+    return yaml.safe_load(text) or {}
 
 
 def load_config(directory: str | Path | None = None) -> AgriSenseConfig:
-    """Load greenhouse.yaml, crops.yaml and sensors.yaml from `directory` (default: built-ins)."""
+    """Load greenhouse.yaml, crops.yaml, sensors.yaml and the optional control.yaml from
+    `directory` (default: the built-in profiles)."""
     path = Path(directory) if directory is not None else None
     return AgriSenseConfig(
         greenhouse=_read_yaml(path, "greenhouse.yaml"),
         crops=_read_yaml(path, "crops.yaml"),
         sensors=_read_yaml(path, "sensors.yaml"),
+        control=_read_yaml(path, "control.yaml", optional=True),
     )

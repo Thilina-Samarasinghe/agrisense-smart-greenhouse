@@ -36,12 +36,20 @@
 9. CLI (`agrisense simulate`): run a simulated day → CSV
 10. Tests: physical plausibility, mass conservation, determinism (63 tests)
 
-## Phase 2: Automation engine (1 week)
-- Rule engine with priority layers: emergency stop → interlocks → manual override → rules → schedules
-- Hysteresis, minimum on/off times, max run time
-- Sensor fault detection (stale, out-of-range, rate-of-change) → fail-safe
-- Decision log with explanations
-- Scenario tests: hot day, rainfall, water shortage, sensor failure, pump failure
+## Phase 2: Automation engine (1 week) ✅ done
+1. `control/controller.py`: priority layers (emergency stop → interlocks → operator mode → rules →
+   minimum on/off times), zone rules (staged fans, humidity venting, fan-and-fog misting,
+   irrigation cycles, DLI grow lights, heating), interlocks (tank lockout, pump no-flow latch,
+   pump run limit, unexpected flow, high-temperature emergency), decision log, command TTL
+2. `control/health.py`: stale, out-of-range, spike, stuck, saturation, warm-up detection;
+   soil probe disagreement; fail-safe behaviour per loop
+3. `control/alerts.py`: deduplicated, auto-clearing and latched alerts
+4. `control/hysteresis.py`, `control/modes.py`: hysteresis, minimum times, AUTO/MANUAL/OFF, timed overrides
+5. `profiles/control.yaml` + `ControlConfig` schema
+6. `runtime.py`: closed loop (simulator and controller only connected through the bus)
+7. CLI: controller on by default, `--no-control`, `--log`
+8. Tests: 33 new unit and closed-loop scenario tests (96 total)
+9. Performance: faster reading messages and bus topic matching (about 2.5× faster closed loop)
 
 ## Phase 3: API, storage & dashboard (1.5–2 weeks)
 - Engine runner as FastAPI background task; WebSocket snapshot stream (UI throttled to 1–2 Hz)

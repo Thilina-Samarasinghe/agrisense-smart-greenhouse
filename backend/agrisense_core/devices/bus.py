@@ -13,7 +13,10 @@ Handler = Callable[[str, dict[str, Any]], None]
 
 
 def topic_matches(pattern: str, topic: str) -> bool:
-    p_parts, t_parts = pattern.split("/"), topic.split("/")
+    return _match(pattern.split("/"), topic.split("/"))
+
+
+def _match(p_parts: list[str], t_parts: list[str]) -> bool:
     for i, p in enumerate(p_parts):
         if p == "#":
             return True
@@ -27,10 +30,12 @@ def topic_matches(pattern: str, topic: str) -> bool:
 class MessageBus:
     def __init__(self) -> None:
         self._subs: dict[str, list[Handler]] = defaultdict(list)
+        self._parts: dict[str, list[str]] = {}
         self.retained: dict[str, dict[str, Any]] = {}
 
     def subscribe(self, pattern: str, handler: Handler) -> None:
         self._subs[pattern].append(handler)
+        self._parts[pattern] = pattern.split("/")
         for topic, payload in list(self.retained.items()):
             if topic_matches(pattern, topic):
                 handler(topic, payload)
@@ -38,7 +43,8 @@ class MessageBus:
     def publish(self, topic: str, payload: dict[str, Any], retain: bool = True) -> None:
         if retain:
             self.retained[topic] = payload
+        t_parts = topic.split("/")
         for pattern, handlers in list(self._subs.items()):
-            if topic_matches(pattern, topic):
+            if _match(self._parts[pattern], t_parts):
                 for h in list(handlers):
                     h(topic, payload)
