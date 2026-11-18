@@ -51,11 +51,22 @@
 8. Tests: 33 new unit and closed-loop scenario tests (96 total)
 9. Performance: faster reading messages and bus topic matching (about 2.5× faster closed loop)
 
-## Phase 3: API, storage & dashboard (1.5–2 weeks)
-- Engine runner as FastAPI background task; WebSocket snapshot stream (UI throttled to 1–2 Hz)
-- REST: zones, actuators, modes/overrides, rules, scenarios, reports
-- SQLAlchemy models + Alembic: readings, events, actuator log, alerts, calibration
-- Dashboard pages: overview, zone detail, scenarios, analytics, rules, events
+## Phase 3: API, storage & dashboard (1.5–2 weeks) ✅ done
+1. `app/services/simulation.py`: runtime advanced in an asyncio background loop on the event-loop
+   thread (all handlers async, no locks), capped steps per slice with a `lagging` flag, speed,
+   pause, fast-forward, new runs with pruning
+2. `app/db/`: SQLAlchemy 2 models (runs, zone/greenhouse/actuator states, sensor readings,
+   decisions, alerts), batched writes per sim-minute (readings every 5 sim-minutes)
+3. `app/api/`: REST for state, config, sensors, speed, scenarios, overrides, modes, emergency
+   stop, alarm reset, history (auto-bucketed), decisions, alerts, analytics summary, runs
+4. `app/ws/live.py`: live state at 2 Hz
+5. `app/services/analytics.py`: water, energy, equipment use, time outside crop targets
+6. Frontend (Next.js 15.5.29 patched, React 19.1.10, Recharts 3.10.1): overview, zone pages,
+   scenarios, analytics, events; validated colour-blind-safe palette, light/dark themes,
+   status with icon + label, table views
+7. Control fix found on the dashboard: fans no longer run all night without benefit (−20 % energy)
+8. 13 API tests (109 total)
+9. Deferred to Phase 5: Alembic migrations (with the PostgreSQL move)
 
 ## Phase 4: Intelligence (1–2 weeks)
 - Anomaly detection (rolling z-score → IsolationForest), precision/recall vs. injected faults

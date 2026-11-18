@@ -10,7 +10,8 @@ climate:
   stage1_level: 0.5           # fan speed for stage 1
   stage2_offset_c: 2.0        # full speed at (max + offset)
   vent_benefit_on_c: 1.0      # start ventilating only if inside is this much warmer than outside
-  vent_benefit_off_c: -0.5    # stop if outside becomes this much warmer than inside
+  vent_benefit_off_c: -0.5    # by day: stop if outside becomes this much warmer than inside
+  vent_benefit_off_night_c: 0.3  # at night (no solar load): stop once inside is within 0.3 degC of outside
   humidity_band_pct: 5
   humidity_vent_start_ratio: 0.90  # vent for humidity only if outside air holds < 90 % of the water
   humidity_vent_stop_ratio: 0.98

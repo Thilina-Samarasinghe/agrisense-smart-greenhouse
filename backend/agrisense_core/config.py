@@ -249,6 +249,7 @@ class ClimateControl(_Model):
     stage2_offset_c: float = Field(default=2.0, gt=0)
     vent_benefit_on_c: float = Field(default=1.0, ge=0)
     vent_benefit_off_c: float = -0.5
+    vent_benefit_off_night_c: float = 0.3
     humidity_band_pct: float = Field(default=5.0, gt=0)
     humidity_vent_start_ratio: float = Field(default=0.90, gt=0, le=1)
     humidity_vent_stop_ratio: float = Field(default=0.98, gt=0, le=1)

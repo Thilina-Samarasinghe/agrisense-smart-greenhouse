@@ -431,7 +431,10 @@ class GreenhouseController:
         # Fan-and-fog: while misting for cooling the fans must keep exchanging air, even if
         # the evaporative cooling has pulled the inside below the outside temperature.
         fogging = z.fog_cooling_until is not None and now < z.fog_cooling_until
-        benefit_off = delta is not None and delta <= c.vent_benefit_off_c and not fogging
+        # By day a small inside/outside difference is what working fans achieve against the sun,
+        # so keep going; at night there is no solar load, so a small difference means no benefit.
+        off_limit = c.vent_benefit_off_c if is_day else c.vent_benefit_off_night_c
+        benefit_off = delta is not None and delta <= off_limit and not fogging
         stage = z.fan_stage
         if stage == 0:
             if t >= tmax and benefit_on:

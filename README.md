@@ -4,8 +4,8 @@
 > automated irrigation, climate control, environmental analytics and AI-driven agricultural optimisation.
 > Built **hardware-independent today, hardware-ready for tomorrow.**
 
-**Status:** Phase 1 (physics simulation) and Phase 2 (automation engine) implemented.
-Next: Phase 3, the API, storage and live dashboard. See the [Roadmap](#-roadmap).
+**Status:** Phases 1 to 3 implemented: physics simulation, automation engine, and the API with
+storage and a live web dashboard. Next: Phase 4, intelligence (ML). See the [Roadmap](#-roadmap).
 
 ---
 
@@ -21,15 +21,16 @@ Next: Phase 3, the API, storage and live dashboard. See the [Roadmap](#-roadmap)
 8. [Scenarios](#-scenarios)
 9. [Model validation](#-model-validation)
 10. [Automation & control logic](#-automation--control-logic)
-11. [Greenhouse zones & crop profiles](#-greenhouse-zones--crop-profiles)
-12. [Configuration files](#-configuration-files)
-13. [Technology stack](#-technology-stack)
-14. [Project structure](#-project-structure)
-15. [Getting started](#-getting-started)
-16. [Roadmap](#-roadmap)
-17. [Future hardware: sensors, actuators & controllers](#-future-hardware-sensors-actuators--controllers)
-18. [Moving from simulation to real hardware](#-moving-from-simulation-to-real-hardware)
-19. [Safety notes](#-safety-notes)
+11. [API, storage & live dashboard](#-api-storage--live-dashboard)
+12. [Greenhouse zones & crop profiles](#-greenhouse-zones--crop-profiles)
+13. [Configuration files](#-configuration-files)
+14. [Technology stack](#-technology-stack)
+15. [Project structure](#-project-structure)
+16. [Getting started](#-getting-started)
+17. [Roadmap](#-roadmap)
+18. [Future hardware: sensors, actuators & controllers](#-future-hardware-sensors-actuators--controllers)
+19. [Moving from simulation to real hardware](#-moving-from-simulation-to-real-hardware)
+20. [Safety notes](#-safety-notes)
 
 ---
 
@@ -106,9 +107,17 @@ Legend: ✅ implemented, 🔜 planned.
 - Modes (AUTO / MANUAL / OFF), timed manual override, latched **emergency stop**
 - Alerts (info / warning / critical, latched where dangerous) and an explained decision log
 
-**Dashboard & analytics** 🔜 (Phase 3)
-- Live zone monitoring, charts, manual controls, scenario panel, alerts
-- Water consumption, irrigation duration, energy use, threshold violations, zone comparison
+**API, storage & live dashboard** ✅
+- FastAPI REST API and a WebSocket that streams the live greenhouse state twice per second
+- The simulation runs inside the server at a selectable speed (1× to 3600×), with pause,
+  fast-forward and new runs
+- History stored in SQLite (PostgreSQL-ready through SQLAlchemy): climate per sim-minute,
+  raw sensor readings, equipment meters, every decision and alert
+- Next.js dashboard: overview, one page per zone (true vs. sensor charts against crop targets,
+  equipment timeline, manual controls, sensor health), scenario panel, analytics, event log,
+  emergency stop, light and dark themes
+- Analytics: water supplied vs. crop use, energy by equipment, time outside crop targets,
+  equipment activations and runtime, alerts by type
 
 **Intelligence** 🔜 (Phase 4)
 - Anomaly detection evaluated against injected, labelled faults
@@ -267,7 +276,8 @@ Closed-loop results (`backend/tests/test_control_scenarios.py`):
 | Hot day (+5 °C), zone A peak temperature | 47.5 °C | 33.7 °C |
 | Hot day, peak rise above outside | 12.1 °C | 0.7 °C (fans plus fog cooling) |
 | Normal 72 h: irrigation | soil dries out | one cycle per zone when needed, VWC held in the crop band |
-| Normal 72 h: zone A fan switching | n/a | 37 changes in 3 days (no chatter) |
+| Normal 72 h: zone A fan switching | n/a | 41 changes in 3 days (no chatter) |
+| Normal 72 h: equipment energy | n/a | 30.2 kWh (20 % less than keeping fans on at night, same temperatures) |
 
 ## 🧠 Automation & control logic
 
@@ -295,7 +305,7 @@ Interlock blocks also apply to manual commands: an operator cannot run the pump 
 
 | Equipment | Rule |
 |---|---|
-| **Fans (temperature)** | Stage 1 (50 %) above the crop's day or night maximum, stage 2 (100 %) at max + 2 °C, OFF at max − 1.5 °C. Only switch on if inside is at least 1 °C warmer than outside (ventilation would not cool otherwise); stop if outside becomes 0.5 °C warmer than inside |
+| **Fans (temperature)** | Stage 1 (50 %) above the crop's day or night maximum, stage 2 (100 %) at max + 2 °C, OFF at max − 1.5 °C. Only switch on if inside is at least 1 °C warmer than outside (ventilation would not cool otherwise). By day keep running until outside becomes 0.5 °C warmer than inside (a small difference is what working fans achieve against the sun); at night stop once inside is within 0.3 °C of outside, since there is no solar load and venting would only waste energy |
 | **Fans (humidity)** | Vent at RH > max + 5 %, until RH < max − 2.5 %, only if the outside air holds less water (absolute humidity check with its own hysteresis). Temperature has priority: never vent for humidity if it would heat a zone already above its maximum |
 | **Mister** | Fog cooling when temperature > max + 2 °C and RH < max − 5 % (pulse misting, fans kept running: fan-and-fog). Humidifies when RH < min − 5 % |
 | **Irrigation** | Valve opens when soil VWC (average of healthy probes) falls below the crop minimum, closes at min + 60 % of the band. A cycle longer than 3 h stops, soaks 15 min and raises `IRRIGATION_TIMEOUT` (leak, clogged emitters or misplaced probe). The pump runs whenever any valve is open |
@@ -370,6 +380,75 @@ Note for the tropical default location: lettuce is a cool-season crop, so in low
 it stays above its temperature target at night and `TEMP_OUT_OF_RANGE` warnings are expected.
 That is the system correctly reporting a climate the equipment cannot fix.
 
+## 🖥️ API, storage & live dashboard
+
+### How the server runs the greenhouse
+
+When the API server starts, it creates the simulator and the controller and advances them in a
+background loop at the configured speed (default 60×: one simulated minute per real second).
+Everything (the loop and every request handler) runs on the server's event-loop thread, so the
+simulation state never needs locks. The loop caps the physics steps per slice; if the machine
+cannot keep up at a very high speed, the dashboard shows "lagging" instead of the API freezing.
+
+### Storage
+
+Each simulation run gets its own history (a new run starts with **New simulation run** or
+`POST /api/sim/reset`; the last 5 runs are kept).
+
+| Table | Content | Stored every |
+|---|---|---|
+| `zone_states` | True climate and soil state, what the controller measured, equipment levels, water totals | 1 simulated minute |
+| `greenhouse_states` | Outside weather, tank level, rain harvested, active alert count | 1 simulated minute |
+| `actuator_states` | Level, cumulative energy, runtime and starts per actuator | 1 simulated minute |
+| `sensor_readings` | Raw readings exactly as the controller received them (value, raw, quality) | 5 simulated minutes |
+| `decisions` | Every controller decision with its rule and explanation | every change |
+| `alerts` | Every alert with raise and clear times | every change |
+
+SQLite is used for development (`backend/agrisense.db`). The same SQLAlchemy models run on
+PostgreSQL by changing `AGRISENSE_DATABASE_URL`; schema migrations (Alembic) arrive with the
+PostgreSQL move in Phase 5. Tables are created automatically on startup.
+
+### REST API
+
+Interactive documentation: `http://localhost:8000/docs`.
+
+| Method & path | Purpose |
+|---|---|
+| `GET /api/health` | Server status |
+| `GET /api/config` | Zones, crop targets, equipment, scenario catalogue |
+| `GET /api/state` | Live state (same as the WebSocket message) |
+| `GET /api/sensors` | Latest reading, raw value, quality and health of every sensor |
+| `POST /api/sim/speed` `{speed}` | Simulation speed (simulated seconds per real second) |
+| `POST /api/sim/pause`, `/api/sim/resume` | Pause and resume |
+| `POST /api/sim/advance` `{hours}` | Fast-forward (about 3 s per simulated day) |
+| `POST /api/sim/reset` `{seed?}` | Start a new run |
+| `GET/POST /api/scenarios`, `DELETE /api/scenarios/{id}` | List, start and stop scenarios |
+| `POST /api/actuators/{id}/override` `{level, duration_min}` | Timed manual override |
+| `POST /api/actuators/{id}/mode` `{mode, level}` | AUTO / MANUAL / OFF |
+| `POST /api/emergency-stop`, `/api/emergency-stop/reset` | Emergency stop and reset |
+| `POST /api/alerts/reset` `{code, scope}` | Reset a latched alarm such as `PUMP_NO_FLOW` |
+| `GET /api/history/zones/{id}?hours=24` | Zone time series (auto-averaged to at most 720 points) |
+| `GET /api/history/greenhouse?hours=24` | Weather and tank time series |
+| `GET /api/decisions?zone=&actuator=&limit=` | Decision log |
+| `GET /api/alerts?active_only=&severity=` | Alert history |
+| `GET /api/analytics/summary?hours=24` | Water, energy, equipment use, time outside targets per zone |
+| `GET /api/runs` | Simulation runs |
+| `WS /ws/live` | Live state pushed twice per second |
+
+### Dashboard pages
+
+| Page | What it shows |
+|---|---|
+| **Overview** | Simulated clock and speed controls, outside weather, tank, one card per zone (measured values against crop targets with status icons, equipment states with the rule behind them, irrigation state), active alerts, latest decisions |
+| **Zone A / B / C** | Charts of the true value and the sensor reading on top of the crop's day/night target band (temperature, humidity, soil moisture), light, an equipment timeline, manual controls for every actuator, sensor health with raw values, the zone's decisions |
+| **Scenarios** | Every scenario with its parameters (zone, sensor, actuator, fault type, magnitude, duration); active scenarios with stop buttons; new run |
+| **Analytics** | Time range filter, totals (water, rain harvested, energy, alerts), water per zone, energy by equipment, time outside crop targets, zone climate summary, equipment use, alerts by type |
+| **Events** | Full decision log (filter by zone and equipment) and alert history (with reset for latched alarms) |
+
+The charts use a colour-blind-validated palette in both light and dark mode. Status (OK, warning,
+critical) is always shown with an icon and a label, never colour alone, and every chart has a
+table view.
+
 ## 🌾 Greenhouse zones & crop profiles
 
 Thresholds are crop-specific and growth-stage specific rather than one set for every plant.
@@ -404,9 +483,9 @@ To simulate your own greenhouse, copy the folder, edit it, and pass `--config <f
 | Layer | Technology |
 |---|---|
 | Simulation & control | Python 3.12, NumPy, Pydantic, PyYAML (SciPy later for model calibration) |
-| Backend API | FastAPI, Uvicorn, WebSockets, SQLAlchemy, Alembic |
+| Backend API | FastAPI, Uvicorn, WebSockets, SQLAlchemy 2 (Alembic with PostgreSQL in Phase 5) |
 | Database | SQLite (development), then PostgreSQL / TimescaleDB (deployment) |
-| Frontend | Next.js 15, React 19, TypeScript, Tailwind CSS, Recharts |
+| Frontend | Next.js 15.5 (patched release), React 19.1, TypeScript, Tailwind CSS 4, Recharts 3 |
 | Machine learning | scikit-learn (anomaly detection, forecasting) |
 | Quality | pytest, Ruff, ESLint, GitHub Actions |
 | Deployment | Docker, Docker Compose |
@@ -442,12 +521,20 @@ agrisense-smart-greenhouse/
 │   │   ├── units.py               # light unit conversions
 │   │   └── cli.py                 # command-line simulator
 │   ├── app/                       # FastAPI application
-│   │   ├── api/  ws/  db/  services/
-│   │   ├── config.py
+│   │   ├── api/                   # sim.py, control.py, data.py, health.py routes
+│   │   ├── ws/live.py             # live WebSocket
+│   │   ├── db/                    # SQLAlchemy models and session
+│   │   ├── services/
+│   │   │   ├── simulation.py      # runs the greenhouse in the server, stores history
+│   │   │   └── analytics.py       # history and analytics queries
+│   │   ├── config.py              # settings (AGRISENSE_* environment variables)
 │   │   └── main.py
-│   ├── tests/                     # 96 tests: physics validation, devices, engine, control
+│   ├── tests/                     # 109 tests: physics, devices, engine, control, API
 │   └── pyproject.toml
 ├── frontend/                      # Next.js dashboard
+│   ├── app/                       # pages: overview, zones/[id], scenarios, analytics, events
+│   ├── components/                # shell, charts, actuators, events, ui
+│   └── lib/                       # API client, live WebSocket provider, formatting
 ├── ml/                            # Phase 4 experiments and models
 ├── infrastructure/                # Docker / compose / CI (Phase 5)
 ├── docs/IMPLEMENTATION_PLAN.md
@@ -469,10 +556,25 @@ python -m venv .venv
 # Windows:  .venv\Scripts\activate      macOS/Linux:  source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
-uvicorn app.main:app --reload            # http://localhost:8000/docs
-pytest                                   # run all tests (about 90 s)
+uvicorn app.main:app                     # API + running simulation: http://localhost:8000/docs
+pytest                                   # run all tests (about 2 min)
 ruff check . && ruff format --check .    # lint
 ```
+
+Server settings (in `backend/.env`, see `.env.example`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGRISENSE_DATABASE_URL` | `sqlite:///./agrisense.db` | Database |
+| `AGRISENSE_SIM_SPEED` | `60` | Simulated seconds per real second |
+| `AGRISENSE_SIM_STEP_S` | `5` | Physics step |
+| `AGRISENSE_SEED` | random | Fixed seed for a reproducible run |
+| `AGRISENSE_AUTOSTART` | `true` | Run the simulation when the server starts |
+| `AGRISENSE_STATE_EVERY_S`, `AGRISENSE_READINGS_EVERY_S` | `60`, `300` | Storage intervals (simulated seconds) |
+| `AGRISENSE_KEEP_RUNS` | `5` | Older runs are deleted |
+
+Avoid `--reload` while the simulation runs: every code change restarts the server and with it
+the simulation run.
 
 ### Run the simulator from the command line
 
@@ -515,11 +617,15 @@ controller, sending commands with `engine.command("A.fan", 1.0)`.
 ```bash
 cd frontend
 npm install
-cp .env.example .env.local
+cp .env.example .env.local               # NEXT_PUBLIC_API_URL=http://localhost:8000
 npm run dev                              # http://localhost:3000
+# or a production build:  npm run build && npm run start
+npm run lint
 ```
 
-The home page shows whether the backend is reachable.
+Start the backend first, then open `http://localhost:3000`. A quick demo: press **+6 h** to
+fast-forward to the morning, open **Scenarios**, start **Hot day** and **Dry soil** (zone B), then
+watch the fans, misters and irrigation react on the zone pages and in the **Events** log.
 
 ## 🗺️ Roadmap
 
@@ -528,7 +634,7 @@ The home page shows whether the backend is reachable.
 | **0: Foundation** ✅ | Repo structure, tooling, backend & frontend skeletons, docs | Health endpoint, tests and lint pass; dashboard shows API status |
 | **1: Simulation engine** ✅ | Weather, physics per zone, actuator specs, sensor hardware models, device interfaces, scenarios, CLI | A simulated day is physically plausible, deterministic with a seed and validated by tests |
 | **2: Automation engine** ✅ | Rules, hysteresis, interlocks, modes, override, emergency stop, sensor health, fail-safes, alerts, decision log | Every scenario (hot day, water shortage, pump failure, sensor failure, ...) passes as an automated test |
-| **3: API, storage & dashboard** | REST + WebSocket, database, live dashboard, scenario panel, analytics | Click "Simulate hot day" and watch the fan react live with an explained log entry |
+| **3: API, storage & dashboard** ✅ | REST + WebSocket, database, live dashboard, scenario panel, analytics | Click "Simulate hot day" and watch the fan react live with an explained log entry |
 | **4: Intelligence** | Anomaly detection, predictive irrigation, optimisation, crop advisor | Measured water/energy savings vs. rule-based control over a simulated week |
 | **5: Deployment & polish** | Docker Compose, PostgreSQL/TimescaleDB, CI, docs, demo | `docker compose up` runs the whole platform |
 | **6: Real hardware** | ESP32 firmware, MQTT drivers, calibration, shadow-mode digital twin | Real sensors feed the same dashboard; twin parameters fitted to real data |
