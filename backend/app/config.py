@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # SQLite for development; switch to PostgreSQL later by changing only this URL.
     database_url: str = "sqlite:///./agrisense.db"
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    # Create missing tables at startup. Convenient for SQLite and quick starts; turn it off where
+    # Prisma Migrate owns the PostgreSQL schema (Docker sets AGRISENSE_DB_AUTO_CREATE=false).
+    db_auto_create: bool = True
 
     # Simulation service
     autostart: bool = True  # run the simulation loop when the server starts

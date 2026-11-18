@@ -1,0 +1,71 @@
+# AgriSense full stack: PostgreSQL -> Prisma migrations -> API (simulator + controller + ML) -> dashboard
+#
+#   cd infrastructure
+#   docker compose up --build            # local PostgreSQL in a container
+#   docker compose -f docker-compose.yml -f docker-compose.neon.yml up --build   # Neon instead
+#
+# Dashboard: http://localhost:3000   API docs: http://localhost:8000/docs
+name: agrisense
+
+x-db-url: &db-url postgresql://${POSTGRES_USER:-agrisense}:${POSTGRES_PASSWORD:-agrisense}@postgres:5432/${POSTGRES_DB:-agrisense}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agrisense}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agrisense}
+      POSTGRES_DB: ${POSTGRES_DB:-agrisense}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432" # reachable from this machine only (e.g. for Prisma Studio)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot job: applies database/prisma/migrations, then exits. The API waits for it.
+  migrate:
+    build: ../database
+    environment:
+      MIGRATE_DATABASE_URL: *db-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build: ../backend
+    restart: unless-stopped
+    environment:
+      AGRISENSE_DATABASE_URL: *db-url
+      AGRISENSE_DB_AUTO_CREATE: "false" # Prisma Migrate owns the schema
+      AGRISENSE_SIM_SPEED: ${AGRISENSE_SIM_SPEED:-60}
+      AGRISENSE_CORS_ORIGINS: '["http://localhost:3000", "http://127.0.0.1:3000"]'
+      AGRISENSE_ML_DIR: /app/ml
+    volumes:
+      # Trained models and reports from `agrisense ml all` (optional; Insights explains if missing).
+      - ../ml:/app/ml:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: ../frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8000} # as seen by the browser
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  pgdata:

@@ -1,0 +1,160 @@
+// AgriSense database schema: the single source of truth for PostgreSQL (e.g. Neon).
+//
+// Prisma Migrate turns changes here into versioned SQL migrations (prisma/migrations/).
+// The Python backend reads and writes these tables with SQLAlchemy (backend/app/db/models.py);
+// backend/tests/test_schema_sync.py fails if the two definitions ever drift apart.
+//
+// Conventions: snake_case table and column names, timestamps are simulated greenhouse local time
+// (no time zone), every history row belongs to a simulation run and is deleted with it.
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// One simulation run; reset in the dashboard starts a new one.
+model Run {
+  id         Int      @id @default(autoincrement())
+  created_at DateTime @db.Timestamp(6) /// real wall-clock time
+  seed       Int
+  sim_start  DateTime @db.Timestamp(6)
+  greenhouse String   @db.VarChar(100)
+
+  zone_states       ZoneState[]
+  greenhouse_states GreenhouseState[]
+  actuator_states   ActuatorState[]
+  sensor_readings   SensorReading[]
+  decisions         Decision[]
+  alerts            Alert[]
+
+  @@map("runs")
+}
+
+/// True climate and soil state plus what the controller measured, per zone, per stored interval.
+model ZoneState {
+  id                 Int      @id @default(autoincrement())
+  run_id             Int
+  ts                 DateTime @db.Timestamp(6)
+  zone_id            String   @db.VarChar(20)
+  temp_c             Float
+  rh_pct             Float
+  vpd_kpa            Float
+  co2_ppm            Float
+  vwc                Float
+  soil_temp_c        Float
+  par_umol           Float
+  dli_mol            Float
+  et_mm_h            Float
+  measured_temp_c    Float?
+  measured_rh_pct    Float?
+  measured_vwc_pct   Float?
+  measured_lux       Float?
+  fan                Float
+  valve              Float
+  light              Float
+  mister             Float
+  irrigation_l_total Float
+  et_l_total         Float
+
+  run Run @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([run_id, zone_id, ts], map: "ix_zone_states_run_zone_ts")
+  @@map("zone_states")
+}
+
+/// Outside weather, tank and alert count per stored interval.
+model GreenhouseState {
+  id                  Int      @id @default(autoincrement())
+  run_id              Int
+  ts                  DateTime @db.Timestamp(6)
+  out_temp_c          Float
+  out_rh_pct          Float
+  solar_w_m2          Float
+  cloud               Float
+  wind_ms             Float
+  rain_mm_h           Float
+  tank_pct            Float
+  tank_inflow_l_total Float
+  alerts_active       Int
+
+  run Run @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([run_id, ts], map: "ix_greenhouse_states_run_ts")
+  @@map("greenhouse_states")
+}
+
+/// Level and cumulative meters (energy, runtime, starts) of every actuator.
+model ActuatorState {
+  id              Int      @id @default(autoincrement())
+  run_id          Int
+  ts              DateTime @db.Timestamp(6)
+  actuator_id     String   @db.VarChar(40)
+  kind            String   @db.VarChar(20)
+  zone_id         String?  @db.VarChar(20)
+  level           Float
+  energy_wh_total Float
+  runtime_s_total Float
+  starts_total    Int
+
+  run Run @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([run_id, ts], map: "ix_actuator_states_run_ts")
+  @@map("actuator_states")
+}
+
+/// Raw sensor readings exactly as the controller received them.
+model SensorReading {
+  id        Int      @id @default(autoincrement())
+  run_id    Int
+  ts        DateTime @db.Timestamp(6)
+  sensor_id String   @db.VarChar(40)
+  zone_id   String?  @db.VarChar(20)
+  quantity  String   @db.VarChar(30)
+  value     Float?
+  raw       Float?
+  unit      String   @db.VarChar(12)
+  quality   String   @db.VarChar(12)
+
+  run Run @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([run_id, sensor_id, ts], map: "ix_sensor_readings_run_sensor_ts")
+  @@map("sensor_readings")
+}
+
+/// Every controller decision with the rule and readings behind it.
+model Decision {
+  id          Int      @id @default(autoincrement())
+  run_id      Int
+  ts          DateTime @db.Timestamp(6)
+  actuator_id String   @db.VarChar(40)
+  zone_id     String?  @db.VarChar(20)
+  from_level  Float
+  to_level    Float
+  rule        String   @db.VarChar(40)
+  source      String   @db.VarChar(20)
+  message     String   @db.Text
+
+  run Run @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([run_id, ts], map: "ix_decisions_run_ts")
+  @@map("decisions")
+}
+
+/// Alerts with raise and clear times (alert_id is unique within a run).
+model Alert {
+  id         Int       @id @default(autoincrement())
+  run_id     Int
+  alert_id   Int
+  code       String    @db.VarChar(40)
+  severity   String    @db.VarChar(10)
+  message    String    @db.Text
+  zone_id    String?   @db.VarChar(20)
+  subject    String?   @db.VarChar(60)
+  latched    Boolean
+  raised_at  DateTime  @db.Timestamp(6)
+  cleared_at DateTime? @db.Timestamp(6)
+
+  run Run @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([run_id, alert_id], map: "ix_alerts_run_alert")
+  @@map("alerts")
+}

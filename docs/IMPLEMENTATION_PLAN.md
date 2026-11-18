@@ -86,10 +86,24 @@
 9. PostgreSQL support (tested on Neon): background batched writes with retry, autocommit reads in
    threads, SQL-side aggregation, retention, storage status; `sslnegotiation=direct` workaround
 
-## Phase 5: Deployment & polish (3–5 days)
-- Dockerfiles, docker-compose (API, frontend, PostgreSQL/TimescaleDB, optional Mosquitto)
-- GitHub Actions CI (pytest, Ruff, ESLint, build)
-- Architecture docs, demo GIF
+## Phase 5: Deployment & polish (3–5 days) ✅ done (written, images not built locally)
+1. `database/`: Prisma 7.10.1 schema (`schema.prisma`) as the single source of truth for
+   PostgreSQL, initial migration `20261118000000_init`, `prisma.config.ts` (URL from
+   MIGRATE_DATABASE_URL / DATABASE_URL / backend .env), npm scripts (deploy, status, dev,
+   baseline, studio), migration Dockerfile. Prisma replaces the planned Alembic; SQLAlchemy stays
+   the runtime ORM (Prisma's Python client is unmaintained)
+2. `backend/tests/test_schema_sync.py`: Prisma schema, migration SQL and SQLAlchemy models must
+   match (verified to fail on a deliberate mismatch)
+3. `backend/tests/test_postgres.py`: API on a Prisma-migrated PostgreSQL (CI only)
+4. `AGRISENSE_DB_AUTO_CREATE` (off in Docker)
+5. Dockerfiles: backend (multi-stage, venv, non-root, health check), frontend (Next.js
+   standalone), database (migrate job); `.dockerignore` files
+6. `infrastructure/docker-compose.yml` (PostgreSQL 17, migrate, API, dashboard with health-checked
+   start order) and `docker-compose.neon.yml` override
+7. `.github/workflows/ci.yml`: backend, frontend, database (migrations + drift check + integration
+   test on PostgreSQL), Docker image builds
+8. Not done: TimescaleDB (plain PostgreSQL is enough at this data volume), Mosquitto (Phase 6),
+   demo GIF
 
 ## Phase 6: Real hardware
 - ESP32 firmware (sensors → MQTT, actuator commands with TTL fail-safe)

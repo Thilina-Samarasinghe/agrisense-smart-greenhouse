@@ -1,0 +1,18 @@
+# Override: use a Neon (or any external) PostgreSQL database instead of the local container.
+#
+#   cp .env.example .env      # then fill in the two Neon URLs (this .env is git-ignored)
+#   docker compose -f docker-compose.yml -f docker-compose.neon.yml up --build
+services:
+  postgres:
+    profiles: ["local-db"] # not started with this override
+
+  migrate:
+    environment:
+      # Neon *direct* host (without "-pooler"): migrations need session-level advisory locks.
+      MIGRATE_DATABASE_URL: ${NEON_MIGRATE_URL:?set NEON_MIGRATE_URL in infrastructure/.env}
+    depends_on: !reset {}
+
+  backend:
+    environment:
+      # Neon *pooled* host ("-pooler"): many short connections from the API.
+      AGRISENSE_DATABASE_URL: ${NEON_DATABASE_URL:?set NEON_DATABASE_URL in infrastructure/.env}

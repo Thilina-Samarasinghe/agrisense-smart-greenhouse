@@ -4,10 +4,10 @@
 > automated irrigation, climate control, environmental analytics and AI-driven agricultural optimisation.
 > Built **hardware-independent today, hardware-ready for tomorrow.**
 
-**Status:** Phases 1 to 4 implemented: physics simulation, automation engine, API with storage
-(SQLite or PostgreSQL/Neon) and a live web dashboard, and machine learning (anomaly detection,
-irrigation forecasting, setpoint optimisation, crop advice). Next: Phase 5, deployment.
-See the [Roadmap](#-roadmap).
+**Status:** Phases 1 to 5 implemented: physics simulation, automation engine, API with storage
+(SQLite or PostgreSQL/Neon, schema managed by Prisma Migrate) and a live web dashboard, machine
+learning (anomaly detection, irrigation forecasting, setpoint optimisation, crop advice), and
+deployment (Docker Compose, CI). Next: Phase 6, real hardware. See the [Roadmap](#-roadmap).
 
 ---
 
@@ -25,15 +25,18 @@ See the [Roadmap](#-roadmap).
 10. [Automation & control logic](#-automation--control-logic)
 11. [API, storage & live dashboard](#-api-storage--live-dashboard)
 12. [Intelligence (machine learning)](#-intelligence-machine-learning)
-13. [Greenhouse zones & crop profiles](#-greenhouse-zones--crop-profiles)
-14. [Configuration files](#-configuration-files)
-15. [Technology stack](#-technology-stack)
-16. [Project structure](#-project-structure)
-17. [Getting started](#-getting-started)
-18. [Roadmap](#-roadmap)
-19. [Future hardware: sensors, actuators & controllers](#-future-hardware-sensors-actuators--controllers)
-20. [Moving from simulation to real hardware](#-moving-from-simulation-to-real-hardware)
-21. [Safety notes](#-safety-notes)
+13. [Database schema and migrations (Prisma)](#-database-schema-and-migrations-prisma)
+14. [Deployment with Docker](#-deployment-with-docker)
+15. [Continuous integration](#-continuous-integration)
+16. [Greenhouse zones & crop profiles](#-greenhouse-zones--crop-profiles)
+17. [Configuration files](#-configuration-files)
+18. [Technology stack](#-technology-stack)
+19. [Project structure](#-project-structure)
+20. [Getting started](#-getting-started)
+21. [Roadmap](#-roadmap)
+22. [Future hardware: sensors, actuators & controllers](#-future-hardware-sensors-actuators--controllers)
+23. [Moving from simulation to real hardware](#-moving-from-simulation-to-real-hardware)
+24. [Safety notes](#-safety-notes)
 
 ---
 
@@ -422,7 +425,7 @@ Two databases are supported through SQLAlchemy, chosen by `AGRISENSE_DATABASE_UR
 | **SQLite** (default) | Development, tests | Zero setup, file `backend/agrisense.db` |
 | **PostgreSQL** | Persistent or cloud storage, e.g. a free **Neon** serverless database | Paste the Neon URL (`postgresql://...`); the psycopg 3 driver is used automatically |
 
-Tables are created automatically on startup (schema migrations with Alembic arrive in Phase 5).
+The PostgreSQL schema is managed with **Prisma Migrate** (see [Database schema and migrations](#-database-schema-and-migrations-prisma)); for SQLite and quick starts the backend creates missing tables itself.
 
 How storage stays fast on a remote database (each round trip to Neon took about 350 ms in testing):
 
@@ -616,6 +619,84 @@ advisor still works.
 sensors and forecaster must be retrained on real healthy data. The pipeline is the same, only
 the recorder's source changes.
 
+## 🗄️ Database schema and migrations (Prisma)
+
+The PostgreSQL schema has one source of truth: [`database/prisma/schema.prisma`](database/prisma/schema.prisma).
+**Prisma Migrate** turns schema changes into versioned SQL migrations in
+`database/prisma/migrations/` (the first is `20261118000000_init`). The Python backend keeps
+using **SQLAlchemy** at runtime (Prisma's own client is for TypeScript; its Python client is no
+longer maintained), and `backend/tests/test_schema_sync.py` compares the Prisma schema, the
+migration SQL and the SQLAlchemy models column by column, so they cannot drift apart unnoticed.
+
+| Command (in `database/`) | What it does |
+|---|---|
+| `npm install` | Installs Prisma 7.10.1 (about 100 MB, only needed where migrations run) |
+| `npm run validate` | Checks `schema.prisma` |
+| `npm run deploy` | Applies pending migrations (`prisma migrate deploy`) |
+| `npm run status` | Shows which migrations are applied |
+| `npm run dev -- --name add_x` | After editing `schema.prisma`: creates a new migration (needs a shadow database, `SHADOW_DATABASE_URL`) |
+| `npm run baseline` | Marks the initial migration as applied on a database whose tables already exist |
+| `npm run studio` | Browses the data in Prisma Studio |
+
+The connection comes from `MIGRATE_DATABASE_URL`, `DATABASE_URL` or the backend's
+`AGRISENSE_DATABASE_URL` (read from `backend/.env`), in that order. Migrations only target
+PostgreSQL; SQLite development databases are created by the backend.
+
+**Changing the schema:** edit `schema.prisma`, run `npm run dev -- --name <change>`, update
+`backend/app/db/models.py` to match, and run the backend tests (the sync test tells you what
+differs).
+
+**Existing Neon database:** the tables already in Neon were created by the backend earlier and are
+identical to the initial migration. Run `npm run baseline` once so Prisma records it as applied;
+later migrations then apply normally with `npm run deploy`. For migrations, use Neon's **direct**
+host (without `-pooler`) in `MIGRATE_DATABASE_URL`: migrations use advisory locks, which the
+connection pooler does not support. On networks that block PostgreSQL's SSL start message (see
+the troubleshooting note in the storage section), Prisma may not be able to connect from that
+machine; run migrations from Docker, CI or another network.
+
+## 🐳 Deployment with Docker
+
+Three images, each defined next to its code, plus Compose files in `infrastructure/`:
+
+| Image | Dockerfile | Contents |
+|---|---|---|
+| API | `backend/Dockerfile` | Multi-stage Python 3.12 slim image with a virtual environment, non-root user, health check. One worker: the simulation lives in the process |
+| Dashboard | `frontend/Dockerfile` | Next.js standalone build on Node 22 Alpine (only the runtime files), non-root user. The API URL is baked in at build time (`NEXT_PUBLIC_API_URL`) |
+| Migrations | `database/Dockerfile` | One-shot job running `prisma migrate deploy` |
+
+```bash
+cd infrastructure
+cp .env.example .env                       # change POSTGRES_PASSWORD
+docker compose up --build                  # PostgreSQL 17 -> migrations -> API -> dashboard
+# Dashboard: http://localhost:3000   API: http://localhost:8000/docs
+
+# With Neon instead of the local PostgreSQL (set NEON_DATABASE_URL and NEON_MIGRATE_URL in .env):
+docker compose -f docker-compose.yml -f docker-compose.neon.yml up --build
+
+docker compose down                        # stop; add -v to delete the local database volume
+```
+
+Start-up order is enforced by health checks: PostgreSQL healthy, then the migration job completes
+successfully, then the API becomes healthy, then the dashboard starts. The API runs with
+`AGRISENSE_DB_AUTO_CREATE=false`, so the schema always comes from Prisma. Trained ML models are
+mounted read-only from `../ml` (train them first with `agrisense ml all`, or the Insights page
+explains how).
+
+Expected disk use: about 3 GB for images and build cache (Python with scikit-learn, Node, Next.js
+build, PostgreSQL). The images were written for this project but **not built on the development
+machine** (not enough disk space); CI builds all three on every push.
+
+## ✅ Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` or `development` and on pull requests:
+
+| Job | Checks |
+|---|---|
+| Backend | Ruff lint and format, full pytest suite |
+| Frontend | ESLint, TypeScript type-check, production build |
+| Database | `prisma validate`; migrations applied to an empty PostgreSQL 17; `prisma migrate diff --exit-code` proves the migrations produce exactly `schema.prisma`; the backend integration test (`tests/test_postgres.py`) runs the API on the Prisma-created schema |
+| Docker | Builds the API, dashboard and migration images (no push) |
+
 ## 🌾 Greenhouse zones & crop profiles
 
 Thresholds are crop-specific and growth-stage specific rather than one set for every plant.
@@ -650,12 +731,13 @@ To simulate your own greenhouse, copy the folder, edit it, and pass `--config <f
 | Layer | Technology |
 |---|---|
 | Simulation & control | Python 3.12, NumPy, Pydantic, PyYAML (SciPy later for model calibration) |
-| Backend API | FastAPI, Uvicorn, WebSockets, SQLAlchemy 2 (Alembic with PostgreSQL in Phase 5) |
+| Backend API | FastAPI, Uvicorn, WebSockets, SQLAlchemy 2 (runtime data access) |
+| Schema & migrations | Prisma 7 (`schema.prisma` + Prisma Migrate) |
 | Database | SQLite (development) or PostgreSQL via psycopg 3 (tested on Neon serverless) |
 | Frontend | Next.js 15.5 (patched release), React 19.1, TypeScript, Tailwind CSS 4, Recharts 3 |
 | Machine learning | scikit-learn (HistGradientBoosting, IsolationForest), NumPy, joblib |
 | Quality | pytest, Ruff, ESLint, GitHub Actions |
-| Deployment | Docker, Docker Compose |
+| Deployment | Docker (multi-stage images), Docker Compose, GitHub Actions CI |
 | Future hardware link | MQTT (Mosquitto), ESP32 firmware |
 
 ## 📁 Project structure
@@ -699,6 +781,7 @@ agrisense-smart-greenhouse/
 │   │   ├── config.py              # settings (AGRISENSE_* environment variables)
 │   │   └── main.py
 │   ├── tests/                     # tests: physics, devices, engine, control, API, ML
+│   ├── Dockerfile
 │   └── pyproject.toml
 ├── frontend/                      # Next.js dashboard
 │   ├── app/                       # pages: overview, zones/[id], scenarios, analytics, events
@@ -708,7 +791,9 @@ agrisense-smart-greenhouse/
 │   ├── reports/                   # Phase 4 results (committed): phase4_results.md/.json, optimized_control.yaml
 │   ├── models/                    # trained models (generated, git-ignored)
 │   └── data/                      # simulated datasets (generated, git-ignored)
-├── infrastructure/                # Docker / compose / CI (Phase 5)
+├── database/                      # Prisma: schema.prisma, migrations/, prisma.config.ts, Dockerfile (migrate job)
+├── infrastructure/                # docker-compose.yml, docker-compose.neon.yml, .env.example
+├── .github/workflows/ci.yml       # CI: backend, frontend, database (PostgreSQL), Docker builds
 ├── docs/IMPLEMENTATION_PLAN.md
 └── README.md
 ```
@@ -718,7 +803,7 @@ agrisense-smart-greenhouse/
 ### Prerequisites
 - Python 3.12+
 - Node.js 20+ and npm
-- (Later) Docker Desktop
+- Optional: Docker with Docker Compose (Docker Desktop or Docker Engine in WSL 2) for the container stack
 
 ### Backend
 
@@ -747,6 +832,7 @@ Server settings (in `backend/.env`, see `.env.example`):
 | `AGRISENSE_RETAIN_DAYS` | `30` | Simulated days of history kept per run |
 | `AGRISENSE_FLUSH_EVERY_S` | `2` | Real seconds between background history writes |
 | `AGRISENSE_ML_DIR` | repository `ml/` | Trained models and reports |
+| `AGRISENSE_DB_AUTO_CREATE` | `true` | Create missing tables at startup; `false` where Prisma Migrate owns the schema (Docker) |
 
 The database password belongs only in `backend/.env`, which git ignores. Never commit it.
 
@@ -813,7 +899,7 @@ watch the fans, misters and irrigation react on the zone pages and in the **Even
 | **2: Automation engine** ✅ | Rules, hysteresis, interlocks, modes, override, emergency stop, sensor health, fail-safes, alerts, decision log | Every scenario (hot day, water shortage, pump failure, sensor failure, ...) passes as an automated test |
 | **3: API, storage & dashboard** ✅ | REST + WebSocket, database, live dashboard, scenario panel, analytics | Click "Simulate hot day" and watch the fan react live with an explained log entry |
 | **4: Intelligence** ✅ | Anomaly detection, predictive irrigation, optimisation, crop advisor | Measured water/energy savings vs. rule-based control over a simulated week |
-| **5: Deployment & polish** | Docker Compose, PostgreSQL/TimescaleDB, CI, docs, demo | `docker compose up` runs the whole platform |
+| **5: Deployment & polish** ✅ | Docker images and Compose, Prisma schema and migrations, CI, docs | `docker compose up` runs the whole platform |
 | **6: Real hardware** | ESP32 firmware, MQTT drivers, calibration, shadow-mode digital twin | Real sensors feed the same dashboard; twin parameters fitted to real data |
 
 Detailed plan: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).

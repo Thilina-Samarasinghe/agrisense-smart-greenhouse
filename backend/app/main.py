@@ -24,7 +24,8 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db = Database(cfg.database_url)
-        db.create_all()
+        if cfg.db_auto_create:
+            db.create_all()
         service = SimulationService(cfg, db)
         app.state.settings = cfg
         app.state.service = service
