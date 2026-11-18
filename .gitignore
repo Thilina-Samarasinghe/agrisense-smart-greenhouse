@@ -25,4 +25,4 @@ Thumbs.db
 
 # ML artefacts
 ml/data/
-ml/models/*.pkl
+ml/models/

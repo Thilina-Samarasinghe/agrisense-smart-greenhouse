@@ -1,0 +1,488 @@
+{
+  "plan": {
+    "healthy_train": [
+      100,
+      101,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107
+    ],
+    "calib": [
+      150,
+      151
+    ],
+    "healthy_test": [
+      200,
+      201,
+      202,
+      203
+    ],
+    "fault_train": [
+      300,
+      301,
+      302,
+      303,
+      304,
+      305,
+      306,
+      307
+    ],
+    "fault_test": [
+      400,
+      401,
+      402,
+      403,
+      404,
+      405
+    ],
+    "healthy_days": 5,
+    "calib_days": 3,
+    "fault_days": 3,
+    "opt_candidates": 30,
+    "opt_seeds": [
+      500,
+      501
+    ],
+    "opt_days": 2,
+    "val_seeds": [
+      600,
+      601,
+      602
+    ],
+    "val_days": 3
+  },
+  "anomaly": {
+    "channel_days_healthy": 196.8,
+    "methods": {
+      "rules": {
+        "precision": 0.862,
+        "recall": 0.534,
+        "f1": 0.66,
+        "event_recall": 0.735,
+        "false_alarms_per_channel_day": 1.179,
+        "by_fault": {
+          "stuck": {
+            "events": 26,
+            "detected": 26,
+            "recall": 1.0,
+            "median_delay_min": 10.0
+          },
+          "spike": {
+            "events": 20,
+            "detected": 20,
+            "recall": 1.0,
+            "median_delay_min": 2.0
+          },
+          "drift": {
+            "events": 15,
+            "detected": 5,
+            "recall": 0.333,
+            "median_delay_min": 137.0
+          },
+          "offset": {
+            "events": 22,
+            "detected": 10,
+            "recall": 0.455,
+            "median_delay_min": 0.0
+          },
+          "dropout": {
+            "events": 7,
+            "detected": 7,
+            "recall": 1.0,
+            "median_delay_min": 0.0
+          }
+        }
+      },
+      "isolation": {
+        "precision": 0.624,
+        "recall": 0.48,
+        "f1": 0.543,
+        "event_recall": 0.783,
+        "false_alarms_per_channel_day": 1.128,
+        "by_fault": {
+          "stuck": {
+            "events": 26,
+            "detected": 14,
+            "recall": 0.538,
+            "median_delay_min": 38.0
+          },
+          "spike": {
+            "events": 20,
+            "detected": 16,
+            "recall": 0.8,
+            "median_delay_min": 55.5
+          },
+          "drift": {
+            "events": 15,
+            "detected": 13,
+            "recall": 0.867,
+            "median_delay_min": 54.0
+          },
+          "offset": {
+            "events": 22,
+            "detected": 22,
+            "recall": 1.0,
+            "median_delay_min": 4.0
+          },
+          "dropout": {
+            "events": 7,
+            "detected": 0,
+            "recall": 0.0,
+            "median_delay_min": null
+          }
+        }
+      },
+      "virtual": {
+        "precision": 0.571,
+        "recall": 0.658,
+        "f1": 0.611,
+        "event_recall": 0.928,
+        "false_alarms_per_channel_day": 0.325,
+        "by_fault": {
+          "stuck": {
+            "events": 26,
+            "detected": 26,
+            "recall": 1.0,
+            "median_delay_min": 24.0
+          },
+          "spike": {
+            "events": 20,
+            "detected": 15,
+            "recall": 0.75,
+            "median_delay_min": 58.0
+          },
+          "drift": {
+            "events": 15,
+            "detected": 14,
+            "recall": 0.933,
+            "median_delay_min": 41.0
+          },
+          "offset": {
+            "events": 22,
+            "detected": 22,
+            "recall": 1.0,
+            "median_delay_min": 4.0
+          },
+          "dropout": {
+            "events": 7,
+            "detected": 7,
+            "recall": 1.0,
+            "median_delay_min": 25.0
+          }
+        }
+      },
+      "supervised": {
+        "precision": 0.901,
+        "recall": 0.837,
+        "f1": 0.868,
+        "event_recall": 1.0,
+        "false_alarms_per_channel_day": 0.168,
+        "by_fault": {
+          "stuck": {
+            "events": 26,
+            "detected": 26,
+            "recall": 1.0,
+            "median_delay_min": 7.0
+          },
+          "spike": {
+            "events": 20,
+            "detected": 20,
+            "recall": 1.0,
+            "median_delay_min": 7.0
+          },
+          "drift": {
+            "events": 15,
+            "detected": 15,
+            "recall": 1.0,
+            "median_delay_min": 54.0
+          },
+          "offset": {
+            "events": 22,
+            "detected": 22,
+            "recall": 1.0,
+            "median_delay_min": 4.0
+          },
+          "dropout": {
+            "events": 7,
+            "detected": 7,
+            "recall": 1.0,
+            "median_delay_min": 9.0
+          }
+        }
+      }
+    }
+  },
+  "forecast": {
+    "test_minutes": 53141,
+    "buckets": {
+      "0-6 h": {
+        "minutes": 7180,
+        "model_mae_h": 2.76,
+        "baseline_mae_h": 10.68
+      },
+      "6-24 h": {
+        "minutes": 21600,
+        "model_mae_h": 2.72,
+        "baseline_mae_h": 27.83
+      },
+      "24-48 h": {
+        "minutes": 24361,
+        "model_mae_h": 3.87,
+        "baseline_mae_h": 13.79
+      }
+    },
+    "model_mae_h": 3.25,
+    "baseline_mae_h": 19.08,
+    "model_within_6h_precision": 0.92,
+    "model_within_6h_recall": 0.691,
+    "baseline_within_6h_precision": 0.759,
+    "baseline_within_6h_recall": 0.541
+  },
+  "training_seconds": 71.5,
+  "optimisation": {
+    "search": {
+      "default": {
+        "params": {
+          "climate.stage1_level": 0.5,
+          "climate.stage2_offset_c": 2.0,
+          "climate.temp_band_c": 1.5,
+          "climate.vent_benefit_on_c": 1.0,
+          "climate.vent_benefit_off_night_c": 0.3,
+          "climate.mist_cooling_offset_c": 2.0,
+          "climate.humidity_band_pct": 5.0
+        },
+        "energy_kwh": 19.42529166666757,
+        "temp_violation_h": 134.26666666666566,
+        "rh_violation_h": 94.0916666666626,
+        "water_l": 384.1666666666632,
+        "violation_h": 228.35833333332826
+      },
+      "best": {
+        "params": {
+          "climate.stage1_level": 0.46,
+          "climate.stage2_offset_c": 2.46,
+          "climate.temp_band_c": 2.76,
+          "climate.vent_benefit_on_c": 2.37,
+          "climate.vent_benefit_off_night_c": 0.42,
+          "climate.mist_cooling_offset_c": 2.21,
+          "climate.humidity_band_pct": 5.25
+        },
+        "energy_kwh": 14.622360555556043,
+        "temp_violation_h": 134.29166666666566,
+        "rh_violation_h": 94.01666666666262,
+        "water_l": 381.69444444444093,
+        "violation_h": 228.30833333332828
+      },
+      "pareto": [
+        {
+          "params": {
+            "climate.stage1_level": 0.61,
+            "climate.stage2_offset_c": 3.78,
+            "climate.temp_band_c": 1.77,
+            "climate.vent_benefit_on_c": 2.41,
+            "climate.vent_benefit_off_night_c": 0.55,
+            "climate.mist_cooling_offset_c": 1.78,
+            "climate.humidity_band_pct": 7.34
+          },
+          "energy_kwh": 13.408256111111951,
+          "temp_violation_h": 134.07499999999885,
+          "rh_violation_h": 103.32499999999541,
+          "water_l": 377.22222222221853,
+          "violation_h": 237.39999999999426
+        },
+        {
+          "params": {
+            "climate.stage1_level": 0.36,
+            "climate.stage2_offset_c": 3.01,
+            "climate.temp_band_c": 2.22,
+            "climate.vent_benefit_on_c": 1.73,
+            "climate.vent_benefit_off_night_c": 0.45,
+            "climate.mist_cooling_offset_c": 3.49,
+            "climate.humidity_band_pct": 9.87
+          },
+          "energy_kwh": 14.207716111109665,
+          "temp_violation_h": 135.3999999999999,
+          "rh_violation_h": 95.41666666666254,
+          "water_l": 367.63888888888494,
+          "violation_h": 230.81666666666243
+        },
+        {
+          "params": {
+            "climate.stage1_level": 0.46,
+            "climate.stage2_offset_c": 2.46,
+            "climate.temp_band_c": 2.76,
+            "climate.vent_benefit_on_c": 2.37,
+            "climate.vent_benefit_off_night_c": 0.42,
+            "climate.mist_cooling_offset_c": 2.21,
+            "climate.humidity_band_pct": 5.25
+          },
+          "energy_kwh": 14.622360555556043,
+          "temp_violation_h": 134.29166666666566,
+          "rh_violation_h": 94.01666666666262,
+          "water_l": 381.69444444444093,
+          "violation_h": 228.30833333332828
+        },
+        {
+          "params": {
+            "climate.stage1_level": 0.51,
+            "climate.stage2_offset_c": 2.47,
+            "climate.temp_band_c": 2.95,
+            "climate.vent_benefit_on_c": 2.05,
+            "climate.vent_benefit_off_night_c": 0.38,
+            "climate.mist_cooling_offset_c": 1.31,
+            "climate.humidity_band_pct": 9.04
+          },
+          "energy_kwh": 15.795249444445677,
+          "temp_violation_h": 133.7583333333319,
+          "rh_violation_h": 92.33333333332938,
+          "water_l": 395.38888888888573,
+          "violation_h": 226.0916666666613
+        },
+        {
+          "params": {
+            "climate.stage1_level": 0.66,
+            "climate.stage2_offset_c": 1.05,
+            "climate.temp_band_c": 2.47,
+            "climate.vent_benefit_on_c": 1.53,
+            "climate.vent_benefit_off_night_c": 0.94,
+            "climate.mist_cooling_offset_c": 0.7,
+            "climate.humidity_band_pct": 8.89
+          },
+          "energy_kwh": 16.912113888889976,
+          "temp_violation_h": 133.2083333333315,
+          "rh_violation_h": 91.46666666666276,
+          "water_l": 395.6944444444413,
+          "violation_h": 224.67499999999427
+        },
+        {
+          "params": {
+            "climate.stage1_level": 0.59,
+            "climate.stage2_offset_c": 1.9,
+            "climate.temp_band_c": 2.28,
+            "climate.vent_benefit_on_c": 0.9,
+            "climate.vent_benefit_off_night_c": 0.95,
+            "climate.mist_cooling_offset_c": 1.6,
+            "climate.humidity_band_pct": 3.74
+          },
+          "energy_kwh": 18.428791666668737,
+          "temp_violation_h": 133.44166666666501,
+          "rh_violation_h": 89.5249999999962,
+          "water_l": 386.83333333332996,
+          "violation_h": 222.9666666666612
+        },
+        {
+          "params": {
+            "climate.stage1_level": 0.57,
+            "climate.stage2_offset_c": 2.33,
+            "climate.temp_band_c": 2.85,
+            "climate.vent_benefit_on_c": 0.58,
+            "climate.vent_benefit_off_night_c": 0.76,
+            "climate.mist_cooling_offset_c": 2.34,
+            "climate.humidity_band_pct": 3.2
+          },
+          "energy_kwh": 20.858966111113638,
+          "temp_violation_h": 133.55833333333175,
+          "rh_violation_h": 88.63333333332959,
+          "water_l": 382.1388888888854,
+          "violation_h": 222.19166666666132
+        },
+        {
+          "params": {
+            "climate.stage1_level": 0.71,
+            "climate.stage2_offset_c": 2.25,
+            "climate.temp_band_c": 2.63,
+            "climate.vent_benefit_on_c": 0.52,
+            "climate.vent_benefit_off_night_c": 0.43,
+            "climate.mist_cooling_offset_c": 0.74,
+            "climate.humidity_band_pct": 7.57
+          },
+          "energy_kwh": 23.23918722222433,
+          "temp_violation_h": 133.00833333333134,
+          "rh_violation_h": 88.72499999999624,
+          "water_l": 395.27777777777465,
+          "violation_h": 221.73333333332758
+        }
+      ]
+    },
+    "validation": {
+      "default": {
+        "energy_kwh": 26.131875000000928,
+        "temp_violation_h": 199.17777777782842,
+        "rh_violation_h": 145.80555555556373,
+        "water_l": 873.7777777777787,
+        "violation_h": 344.9833333333921
+      },
+      "tuned": {
+        "energy_kwh": 21.535939444446125,
+        "temp_violation_h": 198.99444444449492,
+        "rh_violation_h": 150.25555555556727,
+        "water_l": 875.6666666666675,
+        "violation_h": 349.2500000000622
+      },
+      "change_pct": {
+        "energy_kwh": -17.6,
+        "temp_violation_h": -0.1,
+        "rh_violation_h": 3.1,
+        "water_l": 0.2,
+        "violation_h": 1.2
+      },
+      "seeds": [
+        600,
+        601,
+        602
+      ],
+      "days": 3,
+      "per_seed": [
+        {
+          "seed": 600,
+          "default": {
+            "energy_kwh": 27.839805555555667,
+            "temp_violation_h": 202.86666666672025,
+            "rh_violation_h": 130.06666666666231,
+            "water_l": 907.1111111111146
+          },
+          "tuned": {
+            "energy_kwh": 24.537459444445503,
+            "temp_violation_h": 203.1666666667205,
+            "rh_violation_h": 134.3999999999991,
+            "water_l": 899.3333333333369
+          }
+        },
+        {
+          "seed": 601,
+          "default": {
+            "energy_kwh": 20.27366666666856,
+            "temp_violation_h": 197.2666666667158,
+            "rh_violation_h": 157.18333333335056,
+            "water_l": 891.1111111111114
+          },
+          "tuned": {
+            "energy_kwh": 18.333238333335494,
+            "temp_violation_h": 197.6666666667161,
+            "rh_violation_h": 162.60000000002154,
+            "water_l": 896.777777777778
+          }
+        },
+        {
+          "seed": 602,
+          "default": {
+            "energy_kwh": 30.282152777778546,
+            "temp_violation_h": 197.40000000004923,
+            "rh_violation_h": 150.1666666666783,
+            "water_l": 823.1111111111102
+          },
+          "tuned": {
+            "energy_kwh": 21.737120555557368,
+            "temp_violation_h": 196.15000000004824,
+            "rh_violation_h": 153.76666666668118,
+            "water_l": 830.8888888888878
+          }
+        }
+      ]
+    },
+    "candidates": 31
+  }
+}

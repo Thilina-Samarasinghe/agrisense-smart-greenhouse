@@ -10,13 +10,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
+import threading
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, select
 
 from agrisense_core.config import AgriSenseConfig, load_config
+from agrisense_core.intelligence.live import LiveIntelligence
+from agrisense_core.intelligence.pipeline import DEFAULT_ML_DIR
 from agrisense_core.runtime import GreenhouseRuntime
 from agrisense_core.sim.scenarios import CATALOG
 from app.config import Settings
@@ -32,6 +37,7 @@ from app.db.models import (
 from app.db.session import Database
 
 MAX_ADVANCE_H = 72.0
+log = logging.getLogger("agrisense.storage")
 
 
 def _r(x: float | None, nd: int = 2) -> float | None:
@@ -51,6 +57,14 @@ class SimulationService:
         self._rows: list[Any] = []
         self._pending_decisions: list[dict[str, Any]] = []
         self._pending_alerts: dict[int, dict[str, Any]] = {}
+        self._write_lock = threading.Lock()
+        self._writer: asyncio.Task | None = None
+        self._last_write = 0.0
+        self.write_errors = 0
+        self.last_write = {"rows": 0, "seconds": 0.0, "at": None}
+        self._prune_before: datetime | None = None
+        ml_dir = Path(settings.ml_dir) if settings.ml_dir else DEFAULT_ML_DIR
+        self.intel = LiveIntelligence(self.config, ml_dir)
         self.reset(settings.seed)
 
     # ------------------------------------------------------------------ lifecycle
@@ -99,6 +113,9 @@ class SimulationService:
                 s.commit()
         self._next_state = rt.now
         self._next_readings = rt.now
+        self._next_obs = rt.now
+        self._next_prune = rt.now + timedelta(days=1)
+        self.intel.reset()
         return self.run_id
 
     async def start(self) -> None:
@@ -111,7 +128,7 @@ class SimulationService:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
-        self.flush()
+        await self.flush_async()
 
     async def _loop(self) -> None:
         last = time.perf_counter()
@@ -121,7 +138,24 @@ class SimulationService:
             real_dt, last = now - last, now
             if not self.paused:
                 self._advance_real(real_dt)
-            self.flush()
+            self._maybe_start_writer(now)
+
+    def _maybe_start_writer(self, now: float) -> None:
+        """Write pending history in a background thread so slow (remote) databases never block
+        the simulation; at most one write is in flight, and failed batches are re-queued."""
+        if self._writer is not None:
+            if not self._writer.done():
+                return
+            failed = self._writer.result()
+            self._writer = None
+            if failed is not None:
+                self._requeue(failed)
+        if now - self._last_write < self.settings.flush_every_s:
+            return
+        batch = self._take_batch()
+        if batch is not None:
+            self._last_write = now
+            self._writer = asyncio.create_task(asyncio.to_thread(self._write_safely, batch))
 
     # ------------------------------------------------------------------ stepping
 
@@ -140,7 +174,6 @@ class SimulationService:
         """Fast-forward by simulated time as quickly as possible (also used by tests)."""
         for _ in range(int(round(sim_seconds / self.runtime.engine.clock.step_s))):
             self._step()
-        self.flush()
 
     def _step(self) -> None:
         self.runtime.step()
@@ -151,6 +184,12 @@ class SimulationService:
         if now >= self._next_readings:
             self._collect_readings(now)
             self._next_readings = now + timedelta(seconds=self.settings.readings_every_s)
+        if now >= self._next_prune:  # retention: drop history older than retain_days, daily
+            self._prune_before = now - timedelta(days=self.settings.retain_days)
+            self._next_prune = now + timedelta(days=1)
+        if now >= self._next_obs:  # one observation per simulated minute for the ML models
+            self.intel.record(self.runtime)
+            self._next_obs = now + timedelta(seconds=60)
 
     def set_speed(self, speed: float) -> None:
         self.runtime.engine.clock.speed = speed
@@ -241,13 +280,46 @@ class SimulationService:
                 )
             )
 
-    def flush(self) -> None:
-        if not (self._rows or self._pending_decisions or self._pending_alerts):
-            return
-        run = self.run_id
-        with self.db.session() as s:
-            s.add_all(self._rows)
-            for d in self._pending_decisions:
+    def _take_batch(self) -> tuple | None:
+        if not (
+            self._rows or self._pending_decisions or self._pending_alerts or self._prune_before
+        ):
+            return None
+        batch = (
+            self.run_id,
+            self._rows,
+            self._pending_decisions,
+            self._pending_alerts,
+            self._prune_before,
+        )
+        self._rows, self._pending_decisions, self._pending_alerts = [], [], {}
+        self._prune_before = None
+        return batch
+
+    def _requeue(self, batch: tuple) -> None:
+        _, rows, decisions, alerts, prune = batch
+        self._prune_before = self._prune_before or prune
+        self._rows[:0] = rows
+        self._pending_decisions[:0] = decisions
+        for k, v in alerts.items():
+            self._pending_alerts.setdefault(k, v)
+
+    def _write_safely(self, batch: tuple) -> tuple | None:
+        """Runs in a worker thread. Returns the batch if it could not be written."""
+        try:
+            self._write(batch)
+            return None
+        except Exception as exc:  # network blip, database restart, ...
+            self.write_errors += 1
+            log.warning("could not store history (will retry): %s", exc)
+            return batch
+
+    def _write(self, batch: tuple) -> None:
+        run, rows, decisions, alerts, prune_before = batch
+        started = time.perf_counter()
+        with self._write_lock, self.db.session() as s:
+            s.add_all(rows)
+            for d in decisions:
                 s.add(
                     DecisionRow(
                         run_id=run,
@@ -261,32 +333,70 @@ class SimulationService:
                         message=d["message"],
                     )
                 )
-            for a in self._pending_alerts.values():
-                row = s.scalar(
-                    select(AlertRow).where(AlertRow.run_id == run, AlertRow.alert_id == a["id"])
-                )
-                cleared = datetime.fromisoformat(a["cleared_at"]) if a["cleared_at"] else None
-                if row is None:
-                    s.add(
-                        AlertRow(
-                            run_id=run,
-                            alert_id=a["id"],
-                            code=a["code"],
-                            severity=a["severity"],
-                            message=a["message"],
-                            zone_id=a["zone_id"],
-                            subject=a["subject"],
-                            latched=a["latched"],
-                            raised_at=datetime.fromisoformat(a["raised_at"]),
-                            cleared_at=cleared,
+            if alerts:
+                # One query for all alerts in the batch (each round trip is slow on a remote DB).
+                existing = {
+                    r.alert_id: r
+                    for r in s.scalars(
+                        select(AlertRow).where(
+                            AlertRow.run_id == run, AlertRow.alert_id.in_(list(alerts))
                         )
                     )
-                else:
-                    row.cleared_at = cleared
+                }
+                for a in alerts.values():
+                    cleared = datetime.fromisoformat(a["cleared_at"]) if a["cleared_at"] else None
+                    row = existing.get(a["id"])
+                    if row is None:
+                        s.add(
+                            AlertRow(
+                                run_id=run,
+                                alert_id=a["id"],
+                                code=a["code"],
+                                severity=a["severity"],
+                                message=a["message"],
+                                zone_id=a["zone_id"],
+                                subject=a["subject"],
+                                latched=a["latched"],
+                                raised_at=datetime.fromisoformat(a["raised_at"]),
+                                cleared_at=cleared,
+                            )
+                        )
+                    else:
+                        row.cleared_at = cleared
+            if prune_before is not None:
+                for table in (
+                    ZoneState,
+                    GreenhouseState,
+                    ActuatorState,
+                    SensorReading,
+                    DecisionRow,
+                ):
+                    s.execute(delete(table).where(table.run_id == run, table.ts < prune_before))
             s.commit()
-        self._rows.clear()
-        self._pending_decisions.clear()
-        self._pending_alerts.clear()
+        self.last_write = {
+            "rows": len(rows) + len(decisions) + len(alerts),
+            "seconds": round(time.perf_counter() - started, 2),
+            "at": datetime.now().isoformat(timespec="seconds"),
+        }
+
+    def flush(self) -> None:
+        """Write everything pending now, on the calling thread (startup, reset, tests)."""
+        batch = self._take_batch()
+        if batch is not None:
+            self._write(batch)
+
+    async def flush_async(self) -> None:
+        """Make all history so far queryable without blocking the event loop."""
+        if self._writer is not None:
+            failed = await self._writer
+            self._writer = None
+            if failed is not None:
+                self._requeue(failed)
+        batch = self._take_batch()
+        if batch is not None:
+            failed = await asyncio.to_thread(self._write_safely, batch)
+            if failed is not None:
+                self._requeue(failed)
 
     # ------------------------------------------------------------------ views
 
@@ -419,6 +529,13 @@ class SimulationService:
             if ctl
             else [],
             "scenarios": e.scenarios.active_summary(),
+            "storage": {
+                "remote": self.db.remote,
+                "pending_rows": len(self._rows) + len(self._pending_decisions),
+                "writing": self._writer is not None and not self._writer.done(),
+                "last_write": self.last_write,
+                "write_errors": self.write_errors,
+            },
         }
 
     def sensors(self) -> list[dict[str, Any]]:

@@ -4,10 +4,10 @@ import Link from "next/link";
 
 import { ActuatorChip } from "@/components/actuators";
 import { AlertList, DecisionFeed } from "@/components/events";
-import { Card, Empty, Meter, rangeStatus, Stat, StatusBadge, type Status } from "@/components/ui";
-import type { AppConfig, LiveState, ZoneConfig } from "@/lib/api";
+import { Card, Empty, Meter, rangeStatus, Stat, StatusBadge, StatusIcon, type Status } from "@/components/ui";
+import { get, type AppConfig, type IrrigationForecast, type LiveState, type ZoneConfig } from "@/lib/api";
 import { fmt, hourOf, inWindow, pct, ZONE_COLOR } from "@/lib/format";
-import { useLive } from "@/lib/live";
+import { useLive, usePolling } from "@/lib/live";
 
 function tankStatus(pct: number): Status {
   if (pct < 10) return "critical";
@@ -22,7 +22,12 @@ const IRRIGATION_LABEL: Record<string, string> = {
   fallback: "Timed (sensor fail-safe)",
 };
 
-function ZoneCard({ zone, live, config }: { zone: ZoneConfig; live: LiveState; config: AppConfig }) {
+function ZoneCard({ zone, live, config, forecast }: {
+  zone: ZoneConfig;
+  live: LiveState;
+  config: AppConfig;
+  forecast?: IrrigationForecast;
+}) {
   const z = live.zones[zone.id];
   if (!z) return null;
   const day = inWindow(hourOf(live.time), config.control.day_window);
@@ -62,7 +67,10 @@ function ZoneCard({ zone, live, config }: { zone: ZoneConfig; live: LiveState; c
               sub={`DLI ${fmt(z.dli_estimate)} of ${t.dli_mol_m2d[0]} mol`} />
         <Stat label="CO₂" value={fmt(z.true.co2_ppm, 0)} unit="ppm" sub={`VPD ${fmt(z.true.vpd_kpa, 2)} kPa`} />
         <Stat label="Irrigation" value={IRRIGATION_LABEL[z.irrigation ?? "idle"] ?? z.irrigation ?? ""}
-              sub={z.irrigation_lpm > 0 ? `${fmt(z.irrigation_lpm, 1)} L/min` : "no flow"} />
+              sub={z.irrigation_lpm > 0 ? `${fmt(z.irrigation_lpm, 1)} L/min`
+                : forecast?.hours_model != null
+                  ? forecast.hours_model >= 48 ? "next: > 48 h (forecast)" : `next: ~${fmt(forecast.hours_model, 0)} h (forecast)`
+                  : "no flow"} />
       </div>
       <div className="mt-3 flex flex-wrap gap-1.5">
         {acts.map(([id, a]) => (
@@ -80,6 +88,7 @@ function ZoneCard({ zone, live, config }: { zone: ZoneConfig; live: LiveState; c
 
 export default function Overview() {
   const { live, config } = useLive();
+  const forecast = usePolling(() => get<IrrigationForecast[]>("/api/intelligence/forecast"), 15000, []);
   if (!live || !config) return <Empty>Connecting to the greenhouse…</Empty>;
   const w = live.weather;
   const pump = live.actuators[Object.keys(config.actuators).find((a) => config.actuators[a].kind === "pump") ?? ""];
@@ -122,12 +131,20 @@ export default function Overview() {
           <div className="mt-3 text-xs text-ink-2">
             Controller {live.control ? "in AUTO" : "disabled"} · run #{live.run_id} · speed {live.speed}×
           </div>
+          {live.storage && (
+            <div className="mt-1 flex items-center gap-1.5 text-xs text-ink-2">
+              <StatusIcon status={live.storage.write_errors ? "warning" : "good"} />
+              History in {live.storage.remote ? "PostgreSQL" : "SQLite"}
+              {live.storage.last_write.at && ` · last write ${live.storage.last_write.rows} rows in ${live.storage.last_write.seconds} s`}
+              {live.storage.write_errors > 0 && ` · ${live.storage.write_errors} write errors (retrying)`}
+            </div>
+          )}
         </Card>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
         {config.zones.map((z) => (
-          <ZoneCard key={z.id} zone={z} live={live} config={config} />
+          <ZoneCard key={z.id} zone={z} live={live} config={config} forecast={forecast?.find((f) => f.zone_id === z.id)} />
         ))}
       </div>
 

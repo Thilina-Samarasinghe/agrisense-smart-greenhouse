@@ -1,10 +1,17 @@
-"""Stored history, events and analytics."""
+"""Stored history, events and analytics.
 
+Database work runs in a worker thread (`_query`): with a remote database such as Neon each round
+trip takes hundreds of milliseconds, and the event loop must keep simulating and streaming.
+"""
+
+import asyncio
+from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.api.deps import get_service
 from app.db.models import AlertRow, DecisionRow, Run
@@ -20,9 +27,28 @@ def _run(svc: SimulationService, run_id: int | None) -> int:
     return run_id or svc.run_id
 
 
+async def _query[T](svc: SimulationService, fn: Callable[[Session], T]) -> T:
+    """Run `fn(session)` off the event loop.
+
+    Locally, pending history is stored first so results are exact. On a remote database the
+    background writer already stores it every few seconds; waiting for it would add seconds to
+    every request, so reads may lag the live state by a few seconds instead.
+    """
+    if not svc.db.remote:
+        await svc.flush_async()
+
+    def work() -> T:
+        with svc.db.read_session() as s:
+            return fn(s)
+
+    return await asyncio.to_thread(work)
+
+
 @router.get("/runs")
 async def runs(svc: SimulationService = Svc) -> list[dict[str, Any]]:
-    with svc.db.session() as s:
+    current = svc.run_id
+
+    def fn(s: Session) -> list[dict[str, Any]]:
         rows = s.scalars(select(Run).order_by(Run.id.desc())).all()
         return [
             {
@@ -30,10 +56,12 @@ async def runs(svc: SimulationService = Svc) -> list[dict[str, Any]]:
                 "seed": r.seed,
                 "sim_start": r.sim_start.isoformat(),
                 "created_at": r.created_at.isoformat(),
-                "current": r.id == svc.run_id,
+                "current": r.id == current,
             }
             for r in rows
         ]
+
+    return await _query(svc, fn)
 
 
 @router.get("/history/zones/{zone_id}")
@@ -46,12 +74,9 @@ async def zone_history(
 ) -> dict[str, Any]:
     if zone_id not in svc.runtime.engine.zones:
         raise HTTPException(404, f"unknown zone '{zone_id}'")
-    svc.flush()
     bucket = bucket_min or analytics.auto_bucket(hours)
-    with svc.db.session() as s:
-        rows = analytics.zone_history(
-            s, _run(svc, run_id), zone_id, svc.now - timedelta(hours=hours), bucket
-        )
+    run, since = _run(svc, run_id), svc.now - timedelta(hours=hours)
+    rows = await _query(svc, lambda s: analytics.zone_history(s, run, zone_id, since, bucket))
     return {"zone_id": zone_id, "bucket_min": bucket, "points": rows}
 
 
@@ -62,12 +87,9 @@ async def greenhouse_history(
     run_id: int | None = None,
     svc: SimulationService = Svc,
 ) -> dict[str, Any]:
-    svc.flush()
     bucket = bucket_min or analytics.auto_bucket(hours)
-    with svc.db.session() as s:
-        rows = analytics.greenhouse_history(
-            s, _run(svc, run_id), svc.now - timedelta(hours=hours), bucket
-        )
+    run, since = _run(svc, run_id), svc.now - timedelta(hours=hours)
+    rows = await _query(svc, lambda s: analytics.greenhouse_history(s, run, since, bucket))
     return {"bucket_min": bucket, "points": rows}
 
 
@@ -79,16 +101,14 @@ async def decisions(
     run_id: int | None = None,
     svc: SimulationService = Svc,
 ) -> list[dict[str, Any]]:
-    svc.flush()
     q = select(DecisionRow).where(DecisionRow.run_id == _run(svc, run_id))
     if zone:
         q = q.where(DecisionRow.zone_id == zone)
     if actuator:
         q = q.where(DecisionRow.actuator_id == actuator)
-    with svc.db.session() as s:
-        rows = s.scalars(
-            q.order_by(DecisionRow.ts.desc(), DecisionRow.id.desc()).limit(limit)
-        ).all()
+    q = q.order_by(DecisionRow.ts.desc(), DecisionRow.id.desc()).limit(limit)
+
+    def fn(s: Session) -> list[dict[str, Any]]:
         return [
             {
                 "ts": r.ts.isoformat(),
@@ -100,8 +120,10 @@ async def decisions(
                 "source": r.source,
                 "message": r.message,
             }
-            for r in rows
+            for r in s.scalars(q).all()
         ]
+
+    return await _query(svc, fn)
 
 
 @router.get("/alerts")
@@ -112,16 +134,14 @@ async def alerts(
     run_id: int | None = None,
     svc: SimulationService = Svc,
 ) -> list[dict[str, Any]]:
-    svc.flush()
     q = select(AlertRow).where(AlertRow.run_id == _run(svc, run_id))
     if active_only:
         q = q.where(AlertRow.cleared_at.is_(None))
     if severity:
         q = q.where(AlertRow.severity == severity)
-    with svc.db.session() as s:
-        rows = s.scalars(
-            q.order_by(AlertRow.raised_at.desc(), AlertRow.id.desc()).limit(limit)
-        ).all()
+    q = q.order_by(AlertRow.raised_at.desc(), AlertRow.id.desc()).limit(limit)
+
+    def fn(s: Session) -> list[dict[str, Any]]:
         return [
             {
                 "id": r.alert_id,
@@ -135,16 +155,17 @@ async def alerts(
                 "cleared_at": r.cleared_at.isoformat() if r.cleared_at else None,
                 "active": r.cleared_at is None,
             }
-            for r in rows
+            for r in s.scalars(q).all()
         ]
+
+    return await _query(svc, fn)
 
 
 @router.get("/analytics/summary")
 async def summary(
     hours: float = Hours, run_id: int | None = None, svc: SimulationService = Svc
 ) -> dict[str, Any]:
-    svc.flush()
-    with svc.db.session() as s:
-        return analytics.summary(
-            s, _run(svc, run_id), svc.now - timedelta(hours=hours), svc.now, svc.config
-        )
+    run, now, cfg = _run(svc, run_id), svc.now, svc.config
+    return await _query(
+        svc, lambda s: analytics.summary(s, run, now - timedelta(hours=hours), now, cfg)
+    )

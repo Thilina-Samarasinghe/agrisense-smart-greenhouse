@@ -68,11 +68,23 @@
 8. 13 API tests (109 total)
 9. Deferred to Phase 5: Alembic migrations (with the PostgreSQL move)
 
-## Phase 4: Intelligence (1–2 weeks)
-- Anomaly detection (rolling z-score → IsolationForest), precision/recall vs. injected faults
-- Predictive irrigation (time-to-threshold forecast; linear baseline vs. gradient boosting)
-- Optimisation: irrigation timing and time-of-use tariff; water/kWh vs. baseline over a simulated week
-- Crop advisor (rule-based, optional LLM summary)
+## Phase 4: Intelligence (1–2 weeks) ✅ done
+1. `intelligence/recorder.py`, `features.py`: per-minute observations (controller view + separate
+   truth/labels), vectorised features shared by training and live scoring
+2. `intelligence/dataset.py`: closed-loop runs with random labelled sensor faults, parallel, cached;
+   separate seeds for training, calibration and test (28 runs, 108 greenhouse-days)
+3. `intelligence/anomaly.py`: rules vs IsolationForest vs virtual sensor (analytical redundancy)
+   vs supervised classifier; calibrated thresholds, debouncing, fault isolation; event-level
+   recall, delays and false alarms per sensor-day
+4. `intelligence/forecast.py`: hours to next irrigation, gradient boosting vs straight line
+5. `intelligence/optimize.py`: simulation-based setpoint search (31 settings), validated on unseen
+   seeds (−17.6 % energy, humidity time-outside-target +3.1 %); not auto-applied.
+   Time-of-use tariffs were dropped: pump energy is negligible next to fans, which cannot be shifted
+6. `intelligence/advisor.py`: explainable rule-based crop advice (no LLM)
+7. `intelligence/pipeline.py` + `agrisense ml all|train|optimize`: reports in `ml/reports/`
+8. API `/api/intelligence/*`, live scoring (`intelligence/live.py`), Insights page, forecast on overview
+9. PostgreSQL support (tested on Neon): background batched writes with retry, autocommit reads in
+   threads, SQL-side aggregation, retention, storage status; `sslnegotiation=direct` workaround
 
 ## Phase 5: Deployment & polish (3–5 days)
 - Dockerfiles, docker-compose (API, frontend, PostgreSQL/TimescaleDB, optional Mosquitto)

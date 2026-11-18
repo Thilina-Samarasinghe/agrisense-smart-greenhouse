@@ -8,7 +8,13 @@ from app.main import create_app
 
 
 def _settings(**kw):
-    base = {"database_url": "sqlite://", "autostart": False, "sim_step_s": 10.0, "seed": 5}
+    base = {
+        "database_url": "sqlite://",
+        "autostart": False,
+        "sim_step_s": 10.0,
+        "seed": 5,
+        "ml_dir": "nonexistent-ml-dir",
+    }  # tests never depend on locally trained models
     return Settings(**{**base, **kw})
 
 
@@ -197,3 +203,55 @@ def test_background_loop_advances_simulation():
         time.sleep(0.6)
         t1 = c.get("/api/state").json()["time"]
     assert t1 > t0
+
+
+# --------------------------------------------------------------------------- intelligence
+
+
+def test_intelligence_endpoints_without_models(client):
+    st = client.get("/api/intelligence/status").json()
+    assert st["models_loaded"] is False and "agrisense ml all" in st["how_to_train"]
+    assert client.get("/api/intelligence/anomalies").json() == []
+    assert client.get("/api/intelligence/forecast").json() == []
+    assert client.get("/api/intelligence/report").json() is None
+    first = client.get("/api/intelligence/advice").json()
+    assert first[0]["title"] == "Not enough history yet"
+    advance(client, 8)
+    advice = client.get("/api/intelligence/advice", params={"hours": 8}).json()
+    assert advice and all({"severity", "title", "detail", "evidence"} <= a.keys() for a in advice)
+    assert len(client.svc.intel.history) >= 470  # one observation per simulated minute
+
+
+# --------------------------------------------------------------------------- database
+
+
+def test_postgres_urls_use_psycopg3_driver():
+    from app.db.session import is_postgres, normalize_url
+
+    url = "postgresql://user:pw@host/db?sslmode=require"
+    assert normalize_url(url) == "postgresql+psycopg://user:pw@host/db?sslmode=require"
+    assert normalize_url("postgres://u@h/d").startswith("postgresql+psycopg://")
+    assert normalize_url("sqlite:///./x.db") == "sqlite:///./x.db"
+    assert is_postgres(url) and not is_postgres("sqlite://")
+
+
+def test_failed_background_write_is_requeued(client):
+    svc = client.svc
+    advance(client, 0.2)
+    svc._rows.append(object())  # not an ORM row: the write fails
+    batch = svc._take_batch()
+    assert svc._write_safely(batch) is batch and svc.write_errors == 1
+    svc._requeue(batch)
+    svc._rows.pop(0)  # drop the bad row, keep the real ones
+    svc.flush()
+    assert client.get("/api/history/zones/A", params={"hours": 1}).json()["points"]
+
+
+def test_retention_prunes_old_history():
+    app = create_app(_settings(retain_days=0.25))
+    with TestClient(app) as c:
+        advance(c, 30)  # crosses the daily retention check
+        advance(c, 0.1)
+        pts = c.get("/api/history/zones/A", params={"hours": 48, "bucket_min": 60}).json()["points"]
+        first = pts[0]["ts"]
+        assert first >= "2026-03-21T17:00"  # only the last ~6 h before the check (+ newer) remain

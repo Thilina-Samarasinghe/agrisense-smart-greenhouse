@@ -4,8 +4,10 @@
 > automated irrigation, climate control, environmental analytics and AI-driven agricultural optimisation.
 > Built **hardware-independent today, hardware-ready for tomorrow.**
 
-**Status:** Phases 1 to 3 implemented: physics simulation, automation engine, and the API with
-storage and a live web dashboard. Next: Phase 4, intelligence (ML). See the [Roadmap](#-roadmap).
+**Status:** Phases 1 to 4 implemented: physics simulation, automation engine, API with storage
+(SQLite or PostgreSQL/Neon) and a live web dashboard, and machine learning (anomaly detection,
+irrigation forecasting, setpoint optimisation, crop advice). Next: Phase 5, deployment.
+See the [Roadmap](#-roadmap).
 
 ---
 
@@ -22,15 +24,16 @@ storage and a live web dashboard. Next: Phase 4, intelligence (ML). See the [Roa
 9. [Model validation](#-model-validation)
 10. [Automation & control logic](#-automation--control-logic)
 11. [API, storage & live dashboard](#-api-storage--live-dashboard)
-12. [Greenhouse zones & crop profiles](#-greenhouse-zones--crop-profiles)
-13. [Configuration files](#-configuration-files)
-14. [Technology stack](#-technology-stack)
-15. [Project structure](#-project-structure)
-16. [Getting started](#-getting-started)
-17. [Roadmap](#-roadmap)
-18. [Future hardware: sensors, actuators & controllers](#-future-hardware-sensors-actuators--controllers)
-19. [Moving from simulation to real hardware](#-moving-from-simulation-to-real-hardware)
-20. [Safety notes](#-safety-notes)
+12. [Intelligence (machine learning)](#-intelligence-machine-learning)
+13. [Greenhouse zones & crop profiles](#-greenhouse-zones--crop-profiles)
+14. [Configuration files](#-configuration-files)
+15. [Technology stack](#-technology-stack)
+16. [Project structure](#-project-structure)
+17. [Getting started](#-getting-started)
+18. [Roadmap](#-roadmap)
+19. [Future hardware: sensors, actuators & controllers](#-future-hardware-sensors-actuators--controllers)
+20. [Moving from simulation to real hardware](#-moving-from-simulation-to-real-hardware)
+21. [Safety notes](#-safety-notes)
 
 ---
 
@@ -119,9 +122,16 @@ Legend: ✅ implemented, 🔜 planned.
 - Analytics: water supplied vs. crop use, energy by equipment, time outside crop targets,
   equipment activations and runtime, alerts by type
 
-**Intelligence** 🔜 (Phase 4)
-- Anomaly detection evaluated against injected, labelled faults
-- Predictive irrigation, water and energy optimisation, crop advisor
+**Intelligence** ✅ (Phase 4)
+- Sensor anomaly detection: four detectors compared on held-out simulations with labelled,
+  injected faults, including a physics-informed "virtual sensor" that catches drift and offset
+  faults the rules cannot see
+- Predictive irrigation: hours until each zone needs water, compared with straight-line
+  extrapolation
+- Simulation-based optimisation of controller setpoints (energy vs. crop conditions), validated
+  on unseen weather
+- Crop advisor: explained recommendations from analytics, live state and model outputs
+- Insights page in the dashboard, and forecasts on the overview
 
 ## 🏗️ How it works: architecture
 
@@ -346,7 +356,8 @@ If a control loop loses its sensor it falls back to a safe behaviour and raises 
 | Tank (no level reading) | Pump locked out |
 
 Limitation: a slow drift or constant offset on a single sensor cannot be detected by rules alone.
-It is caught when redundant probes disagree, and later by the Phase 4 anomaly detector.
+It is caught when redundant probes disagree, and by the Phase 4 virtual-sensor anomaly detector
+(see [Intelligence](#-intelligence-machine-learning)).
 
 ### Alerts and decision log
 
@@ -393,7 +404,7 @@ cannot keep up at a very high speed, the dashboard shows "lagging" instead of th
 ### Storage
 
 Each simulation run gets its own history (a new run starts with **New simulation run** or
-`POST /api/sim/reset`; the last 5 runs are kept).
+`POST /api/sim/reset`; the last 5 runs are kept, and each run keeps its last 30 simulated days).
 
 | Table | Content | Stored every |
 |---|---|---|
@@ -404,9 +415,36 @@ Each simulation run gets its own history (a new run starts with **New simulation
 | `decisions` | Every controller decision with its rule and explanation | every change |
 | `alerts` | Every alert with raise and clear times | every change |
 
-SQLite is used for development (`backend/agrisense.db`). The same SQLAlchemy models run on
-PostgreSQL by changing `AGRISENSE_DATABASE_URL`; schema migrations (Alembic) arrive with the
-PostgreSQL move in Phase 5. Tables are created automatically on startup.
+Two databases are supported through SQLAlchemy, chosen by `AGRISENSE_DATABASE_URL`:
+
+| Database | When | Notes |
+|---|---|---|
+| **SQLite** (default) | Development, tests | Zero setup, file `backend/agrisense.db` |
+| **PostgreSQL** | Persistent or cloud storage, e.g. a free **Neon** serverless database | Paste the Neon URL (`postgresql://...`); the psycopg 3 driver is used automatically |
+
+Tables are created automatically on startup (schema migrations with Alembic arrive in Phase 5).
+
+How storage stays fast on a remote database (each round trip to Neon took about 350 ms in testing):
+
+- **Background writes:** history is written every 2 s in one batched transaction on a worker
+  thread, so the simulation, the API and the WebSocket never wait for the database. A write
+  that fails (network blip) is retried, not lost. The overview's System card shows the last write
+  and any errors.
+- **Read-only autocommit queries** in worker threads: one round trip per query instead of four.
+- **Analytics aggregated in SQL** (`GROUP BY`, first/last meter rows) instead of downloading every
+  row: the 24 h summary went from 27 s to about 2 to 4 s on Neon; history and decisions take
+  about 0.5 s.
+- On a remote database, reads do not wait for the latest write, so charts can lag the live view
+  by a few seconds (2 to 3 simulated minutes at 60×).
+- Storage use is about **5 MB per simulated day**. At 60× that is roughly 300 MB per real day of
+  continuous running, so `AGRISENSE_RETAIN_DAYS` (default 30 simulated days) prunes older history.
+  Check your database plan's storage limit.
+
+**Troubleshooting Neon connections:** if the connection times out although the host is reachable,
+something on the network (firewall, antivirus or ISP) is probably dropping PostgreSQL's
+plaintext SSL start message. Append `&sslnegotiation=direct` to the URL: the client then starts
+TLS immediately (needs libpq 17+, bundled with the installed driver). This was required on the
+development machine.
 
 ### REST API
 
@@ -433,6 +471,11 @@ Interactive documentation: `http://localhost:8000/docs`.
 | `GET /api/alerts?active_only=&severity=` | Alert history |
 | `GET /api/analytics/summary?hours=24` | Water, energy, equipment use, time outside targets per zone |
 | `GET /api/runs` | Simulation runs |
+| `GET /api/intelligence/status`, `POST /api/intelligence/reload` | Model status, reload newly trained models |
+| `GET /api/intelligence/anomalies` | Live anomaly score of every monitored sensor |
+| `GET /api/intelligence/forecast` | Hours until each zone's next irrigation |
+| `GET /api/intelligence/advice?hours=24` | Crop advisor recommendations with evidence |
+| `GET /api/intelligence/report` | Offline evaluation results |
 | `WS /ws/live` | Live state pushed twice per second |
 
 ### Dashboard pages
@@ -443,11 +486,135 @@ Interactive documentation: `http://localhost:8000/docs`.
 | **Zone A / B / C** | Charts of the true value and the sensor reading on top of the crop's day/night target band (temperature, humidity, soil moisture), light, an equipment timeline, manual controls for every actuator, sensor health with raw values, the zone's decisions |
 | **Scenarios** | Every scenario with its parameters (zone, sensor, actuator, fault type, magnitude, duration); active scenarios with stop buttons; new run |
 | **Analytics** | Time range filter, totals (water, rain harvested, energy, alerts), water per zone, energy by equipment, time outside crop targets, zone climate summary, equipment use, alerts by type |
+| **Insights** | Crop advice, next-irrigation forecast per zone, live sensor anomaly table, and the held-out evaluation of every model |
 | **Events** | Full decision log (filter by zone and equipment) and alert history (with reset for latched alarms) |
 
 The charts use a colour-blind-validated palette in both light and dark mode. Status (OK, warning,
 critical) is always shown with an icon and a label, never colour alone, and every chart has a
 table view.
+
+## 🤖 Intelligence (machine learning)
+
+Code: `backend/agrisense_core/intelligence/`. Full results: [`ml/reports/phase4_results.md`](ml/reports/phase4_results.md).
+
+**Method.** All data comes from the closed-loop simulator. A recorder captures, every simulated
+minute, only what a real controller could know (sensor readings as received, its own equipment
+levels and estimates), plus ground truth and fault labels kept apart for scoring. Training,
+calibration and test data come from **different simulation seeds** (different weather, sensor
+manufacturing errors and fault schedules): 28 runs, 108 simulated greenhouse-days, generated in
+parallel. Every number below is measured on seeds the models never saw. The same feature code
+is used offline and live, so the API scores exactly what was evaluated.
+
+### 1. Sensor anomaly detection
+
+Fault runs inject random sensor faults (stuck, spike, drift, offset, dropout) with realistic sizes
+on the air, soil and CO₂ sensors of all zones. Four detectors are compared:
+
+| Detector | How it works |
+|---|---|
+| Rules (Phase 2) | The controller's health monitor: stale, out of range, spikes, stuck, soil probe disagreement |
+| IsolationForest | Unsupervised outlier detection on window and residual features |
+| **Virtual sensor** | Analytical redundancy: a gradient-boosting model learns, on healthy data only, to predict each sensor from the other zones' sensors, the outside sensor, light and equipment state. A residual that stays away from the sensor's own 24 h baseline means the *sensor* changed, not the greenhouse. Needs no fault examples |
+| Supervised | Gradient-boosting classifier trained on labelled simulated faults |
+
+ML alarms are debounced (flagged in 5 of the last 10 minutes) and use **fault isolation**: one
+faulty sensor also skews its peers' predictions, so within a group of the same quantity only
+the most deviant sensor (or several with similar scores) is blamed.
+
+Results on 197 healthy sensor-days plus 90 injected faults:
+
+| Detector | Precision | Recall | Faults caught | False alarms per sensor-day |
+|---|---|---|---|---|
+| Rules | 86 % | 53 % | 74 % | 1.18 |
+| IsolationForest | 62 % | 48 % | 78 % | 1.13 |
+| Virtual sensor | 57 % | 66 % | 93 % | 0.33 |
+| Supervised | 90 % | 84 % | 100 % | 0.17 |
+
+| Fault type | Rules | Virtual sensor | Supervised |
+|---|---|---|---|
+| Stuck | 26/26 (10 min) | 26/26 (24 min) | 26/26 (7 min) |
+| Spike | 20/20 (2 min) | 15/20 (58 min) | 20/20 (7 min) |
+| **Drift** | **5/15** (137 min) | **14/15** (41 min) | 15/15 (54 min) |
+| **Offset** | **10/22** (0 min) | **22/22** (4 min) | 22/22 (4 min) |
+
+Faults caught, with median detection delay. What this shows:
+
+- **The rules cannot see drift or offset** on a single sensor; they only catch those on soil
+  probes, through probe disagreement. The virtual sensor catches nearly all of them, without
+  ever seeing a fault example.
+- **Rules and virtual sensor complement each other:** rules for spikes, stuck values and
+  dropouts, the virtual sensor for drift and offset. The live dashboard flags a sensor when
+  either ML detector does, next to the rules' verdict.
+- **The supervised classifier scores best, but treat it as an upper bound:** it was trained on
+  the same simulated fault types it is tested on. Real faults will differ; the virtual sensor's
+  approach transfers better because it only learns what healthy looks like.
+- **Debouncing and fault isolation matter:** they cut the virtual sensor's false alarms from 3.9
+  to 0.33 per sensor-day, at the cost of a few minutes' delay and missing some intermittent
+  spikes (which the rules catch).
+
+### 2. Predictive irrigation
+
+Hours until each zone's next irrigation starts, compared with straight-line extrapolation of
+the last 3 h soil moisture trend (53,000 test minutes):
+
+| Horizon | Model error | Straight-line error |
+|---|---|---|
+| All | **3.3 h** | 19.1 h |
+| 0 to 6 h ahead | 2.8 h | 10.7 h |
+| 6 to 24 h ahead | 2.7 h | 27.8 h |
+| 24 to 48 h ahead | 3.9 h | 13.8 h |
+
+As a yes/no question, "irrigation within 6 hours?", the model is right 92 % of the times it says
+yes and finds 69 % of such cases (straight line: 76 % and 54 %). Soil dries fast at midday and
+hardly at night, which a straight line cannot know; the model also receives the straight-line
+estimate as a feature and learns corrections to it.
+
+### 3. Controller setpoint optimisation
+
+The simulator is used as a test bench: 31 sets of climate-control parameters (fan stages and
+bands, ventilation thresholds, fog cooling offset, humidity band) were each run in closed loop
+on 2 seeds × 2 days, in parallel. The rule: **lowest energy without more time outside crop
+targets than the defaults**. The winner was then validated on 3 unseen seeds × 3 days:
+
+| Metric | Default | Tuned | Change |
+|---|---|---|---|
+| Equipment energy | 26.1 kWh | 21.5 kWh | **−17.6 %** |
+| Hours outside temperature targets | 199.2 | 199.0 | −0.1 % |
+| Hours outside humidity targets | 145.8 | 150.3 | +3.1 % |
+| Water | 874 L | 876 L | +0.2 % |
+
+The saving mainly comes from starting fans only when inside is 2.4 °C (instead of 1 °C) warmer
+than outside, and a wider hysteresis band. Humidity time-outside-target rose slightly on unseen
+weather, which is the honest trade-off. The settings are in
+[`ml/reports/optimized_control.yaml`](ml/reports/optimized_control.yaml) and are **not applied
+automatically**: merge them into `control.yaml` if you accept the trade-off.
+
+### 4. Crop advisor
+
+Rule-based and explainable: every recommendation carries the evidence behind it. It covers
+cooling capacity (shade screen, pad-and-fan, or crop/season mismatch such as lettuce in the
+lowland tropics), disease risk from humidity, soil too dry or wet, CO₂ depletion, excess light,
+water balance, irrigation timeouts, low tank, pump failure, sensor problems (including virtual-sensor
+anomalies) and energy (pointing to the tuned setpoints).
+
+### Train and run
+
+```bash
+cd backend
+agrisense ml all            # datasets + training + evaluation + optimisation + report (~9 min on 8 cores)
+agrisense ml train          # only datasets, models and evaluation
+agrisense ml optimize       # only setpoint optimisation
+agrisense ml all --quick    # small smoke run (~1 min)
+```
+
+Datasets (`ml/data/`) and models (`ml/models/`) are generated and git-ignored; reports
+(`ml/reports/`) are committed. The API loads the models at startup (or `POST
+/api/intelligence/reload`); without them, the Insights page shows how to train them and the
+advisor still works.
+
+**Limits.** Everything is learned from the simulator. With real sensors (Phase 6) the virtual
+sensors and forecaster must be retrained on real healthy data. The pipeline is the same, only
+the recorder's source changes.
 
 ## 🌾 Greenhouse zones & crop profiles
 
@@ -484,9 +651,9 @@ To simulate your own greenhouse, copy the folder, edit it, and pass `--config <f
 |---|---|
 | Simulation & control | Python 3.12, NumPy, Pydantic, PyYAML (SciPy later for model calibration) |
 | Backend API | FastAPI, Uvicorn, WebSockets, SQLAlchemy 2 (Alembic with PostgreSQL in Phase 5) |
-| Database | SQLite (development), then PostgreSQL / TimescaleDB (deployment) |
+| Database | SQLite (development) or PostgreSQL via psycopg 3 (tested on Neon serverless) |
 | Frontend | Next.js 15.5 (patched release), React 19.1, TypeScript, Tailwind CSS 4, Recharts 3 |
-| Machine learning | scikit-learn (anomaly detection, forecasting) |
+| Machine learning | scikit-learn (HistGradientBoosting, IsolationForest), NumPy, joblib |
 | Quality | pytest, Ruff, ESLint, GitHub Actions |
 | Deployment | Docker, Docker Compose |
 | Future hardware link | MQTT (Mosquitto), ESP32 firmware |
@@ -509,6 +676,8 @@ agrisense-smart-greenhouse/
 │   │   │   ├── bus.py             # in-process MQTT-style message bus
 │   │   │   ├── sensors.py         # hardware-accurate simulated sensors
 │   │   │   └── actuators.py       # simulated actuators with metering and faults
+│   │   ├── intelligence/          # Phase 4: recorder, features, dataset, anomaly, forecast,
+│   │   │                          #          optimize, advisor, pipeline, live scoring
 │   │   ├── control/
 │   │   │   ├── controller.py      # rules, interlocks, arbitration, decision log
 │   │   │   ├── health.py          # sensor health monitor
@@ -529,13 +698,16 @@ agrisense-smart-greenhouse/
 │   │   │   └── analytics.py       # history and analytics queries
 │   │   ├── config.py              # settings (AGRISENSE_* environment variables)
 │   │   └── main.py
-│   ├── tests/                     # 109 tests: physics, devices, engine, control, API
+│   ├── tests/                     # tests: physics, devices, engine, control, API, ML
 │   └── pyproject.toml
 ├── frontend/                      # Next.js dashboard
 │   ├── app/                       # pages: overview, zones/[id], scenarios, analytics, events
 │   ├── components/                # shell, charts, actuators, events, ui
 │   └── lib/                       # API client, live WebSocket provider, formatting
-├── ml/                            # Phase 4 experiments and models
+├── ml/
+│   ├── reports/                   # Phase 4 results (committed): phase4_results.md/.json, optimized_control.yaml
+│   ├── models/                    # trained models (generated, git-ignored)
+│   └── data/                      # simulated datasets (generated, git-ignored)
 ├── infrastructure/                # Docker / compose / CI (Phase 5)
 ├── docs/IMPLEMENTATION_PLAN.md
 └── README.md
@@ -565,13 +737,18 @@ Server settings (in `backend/.env`, see `.env.example`):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGRISENSE_DATABASE_URL` | `sqlite:///./agrisense.db` | Database |
+| `AGRISENSE_DATABASE_URL` | `sqlite:///./agrisense.db` | Database: SQLite file or a `postgresql://` URL (e.g. Neon) |
 | `AGRISENSE_SIM_SPEED` | `60` | Simulated seconds per real second |
 | `AGRISENSE_SIM_STEP_S` | `5` | Physics step |
 | `AGRISENSE_SEED` | random | Fixed seed for a reproducible run |
 | `AGRISENSE_AUTOSTART` | `true` | Run the simulation when the server starts |
 | `AGRISENSE_STATE_EVERY_S`, `AGRISENSE_READINGS_EVERY_S` | `60`, `300` | Storage intervals (simulated seconds) |
 | `AGRISENSE_KEEP_RUNS` | `5` | Older runs are deleted |
+| `AGRISENSE_RETAIN_DAYS` | `30` | Simulated days of history kept per run |
+| `AGRISENSE_FLUSH_EVERY_S` | `2` | Real seconds between background history writes |
+| `AGRISENSE_ML_DIR` | repository `ml/` | Trained models and reports |
+
+The database password belongs only in `backend/.env`, which git ignores. Never commit it.
 
 Avoid `--reload` while the simulation runs: every code change restarts the server and with it
 the simulation run.
@@ -635,7 +812,7 @@ watch the fans, misters and irrigation react on the zone pages and in the **Even
 | **1: Simulation engine** ✅ | Weather, physics per zone, actuator specs, sensor hardware models, device interfaces, scenarios, CLI | A simulated day is physically plausible, deterministic with a seed and validated by tests |
 | **2: Automation engine** ✅ | Rules, hysteresis, interlocks, modes, override, emergency stop, sensor health, fail-safes, alerts, decision log | Every scenario (hot day, water shortage, pump failure, sensor failure, ...) passes as an automated test |
 | **3: API, storage & dashboard** ✅ | REST + WebSocket, database, live dashboard, scenario panel, analytics | Click "Simulate hot day" and watch the fan react live with an explained log entry |
-| **4: Intelligence** | Anomaly detection, predictive irrigation, optimisation, crop advisor | Measured water/energy savings vs. rule-based control over a simulated week |
+| **4: Intelligence** ✅ | Anomaly detection, predictive irrigation, optimisation, crop advisor | Measured water/energy savings vs. rule-based control over a simulated week |
 | **5: Deployment & polish** | Docker Compose, PostgreSQL/TimescaleDB, CI, docs, demo | `docker compose up` runs the whole platform |
 | **6: Real hardware** | ESP32 firmware, MQTT drivers, calibration, shadow-mode digital twin | Real sensors feed the same dashboard; twin parameters fitted to real data |
 

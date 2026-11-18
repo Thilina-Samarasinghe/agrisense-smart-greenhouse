@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     state_every_s: float = Field(default=60.0, gt=0)
     readings_every_s: float = Field(default=300.0, gt=0)
     keep_runs: int = Field(default=5, ge=1)  # older simulation runs are pruned on reset
+    flush_every_s: float = Field(default=2.0, gt=0)  # real seconds between background writes
+    retain_days: float = Field(default=30.0, gt=0)  # simulated days of history kept per run
+
+    # Phase 4 models and reports (default: the repository's ml/ folder)
+    ml_dir: str | None = None
 
     # Live WebSocket updates per real second
     ws_rate_hz: float = Field(default=2.0, gt=0, le=20)

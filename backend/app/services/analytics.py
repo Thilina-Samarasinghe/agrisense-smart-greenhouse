@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from statistics import mean
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from agrisense_core.config import AgriSenseConfig, hhmm_to_hours
@@ -31,6 +31,17 @@ ZONE_FIELDS = [
     "valve",
     "light",
     "mister",
+    "irrigation_l_total",
+    "et_l_total",
+]
+SUMMARY_ZONE_COLUMNS = [
+    "ts",
+    "zone_id",
+    "temp_c",
+    "rh_pct",
+    "vwc",
+    "co2_ppm",
+    "valve",
     "irrigation_l_total",
     "et_l_total",
 ]
@@ -103,35 +114,70 @@ def summary(
     """Water, energy, equipment use and target violations for each zone over a window."""
     gh = config.greenhouse
     day_window = config.control.day_window
-    zone_rows = s.scalars(
-        select(ZoneState)
+    # Everything below is aggregated in the database where possible: on a remote database
+    # (e.g. Neon) transferring every stored row would take far longer than the maths.
+    zone_rows = s.execute(
+        select(*(getattr(ZoneState, c) for c in SUMMARY_ZONE_COLUMNS))
         .where(ZoneState.run_id == run_id, ZoneState.ts >= since)
         .order_by(ZoneState.ts)
     ).all()
-    by_zone: dict[str, list[ZoneState]] = defaultdict(list)
+    by_zone: dict[str, list[Any]] = defaultdict(list)
     for r in zone_rows:
         by_zone[r.zone_id].append(r)
 
-    act_rows = s.scalars(
-        select(ActuatorState)
+    # Meters are cumulative: only the first and last row of each actuator are needed.
+    bounds = (
+        select(
+            ActuatorState.actuator_id,
+            func.min(ActuatorState.ts).label("t0"),
+            func.max(ActuatorState.ts).label("t1"),
+        )
         .where(ActuatorState.run_id == run_id, ActuatorState.ts >= since)
+        .group_by(ActuatorState.actuator_id)
+        .subquery()
+    )
+    edge_rows = s.scalars(
+        select(ActuatorState)
+        .join(
+            bounds,
+            and_(
+                ActuatorState.actuator_id == bounds.c.actuator_id,
+                or_(ActuatorState.ts == bounds.c.t0, ActuatorState.ts == bounds.c.t1),
+            ),
+        )
+        .where(ActuatorState.run_id == run_id)
         .order_by(ActuatorState.ts)
     ).all()
     first: dict[str, ActuatorState] = {}
     last: dict[str, ActuatorState] = {}
-    for r in act_rows:
+    for r in edge_rows:
         first.setdefault(r.actuator_id, r)
         last[r.actuator_id] = r
 
-    decisions = s.scalars(
-        select(DecisionRow).where(DecisionRow.run_id == run_id, DecisionRow.ts >= since)
+    in_window = (DecisionRow.run_id == run_id, DecisionRow.ts >= since)
+    decision_count = s.scalar(select(func.count()).select_from(DecisionRow).where(*in_window)) or 0
+    activations = Counter(
+        dict(
+            s.execute(
+                select(DecisionRow.actuator_id, func.count())
+                .where(*in_window, DecisionRow.from_level == 0, DecisionRow.to_level > 0)
+                .group_by(DecisionRow.actuator_id)
+            ).all()
+        )
+    )
+    alert_counts = s.execute(
+        select(AlertRow.code, AlertRow.severity, func.count())
+        .where(AlertRow.run_id == run_id, AlertRow.raised_at >= since)
+        .group_by(AlertRow.code, AlertRow.severity)
     ).all()
-    activations = Counter(d.actuator_id for d in decisions if d.from_level == 0 and d.to_level > 0)
-    alerts = s.scalars(
-        select(AlertRow).where(AlertRow.run_id == run_id, AlertRow.raised_at >= since)
-    ).all()
+    by_code: Counter[str] = Counter()
+    by_severity: Counter[str] = Counter()
+    for code, severity, n in alert_counts:
+        by_code[code] += n
+        by_severity[severity] += n
 
     interval_min = config_interval_min(zone_rows)
+    covered_from = max(since, zone_rows[0].ts) if zone_rows else until
     zones_out = {}
     for z in gh.zones:
         rows = by_zone.get(z.id, [])
@@ -147,7 +193,7 @@ def summary(
             if not targets.vwc[0] <= r.vwc <= targets.vwc[1]:
                 viol["vwc"] += interval_min
 
-        def stats(attr: str, rows: list[ZoneState] = rows) -> dict[str, float] | None:
+        def stats(attr: str, rows: list[Any] = rows) -> dict[str, float] | None:
             vals = [getattr(r, attr) for r in rows]
             if not vals:
                 return None
@@ -157,7 +203,7 @@ def summary(
                 "max": round(max(vals), 3),
             }
 
-        def delta(attr: str, rows: list[ZoneState] = rows) -> float:
+        def delta(attr: str, rows: list[Any] = rows) -> float:
             return (
                 round(getattr(rows[-1], attr) - getattr(rows[0], attr), 2) if len(rows) > 1 else 0.0
             )
@@ -182,33 +228,31 @@ def summary(
     energy_by_kind: dict[str, float] = defaultdict(float)
     for aid in last:
         energy_by_kind[last[aid].kind] += last[aid].energy_wh_total - first[aid].energy_wh_total
-    gh_rows = s.scalars(
-        select(GreenhouseState)
-        .where(GreenhouseState.run_id == run_id, GreenhouseState.ts >= since)
-        .order_by(GreenhouseState.ts)
-    ).all()
+    rain_lo, rain_hi = s.execute(  # cumulative counter: min/max are the first/last values
+        select(
+            func.min(GreenhouseState.tank_inflow_l_total),
+            func.max(GreenhouseState.tank_inflow_l_total),
+        ).where(GreenhouseState.run_id == run_id, GreenhouseState.ts >= since)
+    ).one()
     return {
-        "since": since.isoformat(),
+        "since": covered_from.isoformat(),
         "until": until.isoformat(),
-        "hours": round((until - since).total_seconds() / 3600, 2),
+        # Hours actually covered by data (a new run has less than the requested window).
+        "hours": round((until - covered_from).total_seconds() / 3600, 2),
         "zones": zones_out,
         "pump": _equipment(first[gh.pump.id], last[gh.pump.id], activations[gh.pump.id])
         if gh.pump.id in last
         else None,
         "energy_kwh_by_kind": {k: round(v / 1000, 3) for k, v in sorted(energy_by_kind.items())},
         "energy_kwh_total": round(sum(energy_by_kind.values()) / 1000, 3),
-        "rain_harvested_l": round(
-            gh_rows[-1].tank_inflow_l_total - gh_rows[0].tank_inflow_l_total, 1
-        )
-        if len(gh_rows) > 1
-        else 0.0,
-        "alerts_by_code": dict(Counter(a.code for a in alerts)),
-        "alerts_by_severity": dict(Counter(a.severity for a in alerts)),
-        "decisions": len(decisions),
+        "rain_harvested_l": round(rain_hi - rain_lo, 1) if rain_lo is not None else 0.0,
+        "alerts_by_code": dict(by_code),
+        "alerts_by_severity": dict(by_severity),
+        "decisions": decision_count,
     }
 
 
-def config_interval_min(rows: list[ZoneState]) -> float:
+def config_interval_min(rows: list[Any]) -> float:
     """Spacing of stored rows in minutes (rows are evenly spaced per zone)."""
     seen: dict[str, datetime] = {}
     for r in rows:

@@ -77,6 +77,7 @@ async def reset(body: ResetIn, svc: SimulationService = Svc) -> dict[str, Any]:
 async def advance(body: AdvanceIn, svc: SimulationService = Svc) -> dict[str, Any]:
     """Fast-forward simulated time (blocks briefly: about 3 s per simulated day)."""
     svc.advance(body.hours * 3600)
+    await svc.flush_async()  # store the fast-forwarded history off the event loop
     return {"time": svc.now.isoformat()}
 
 

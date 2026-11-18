@@ -6,6 +6,7 @@ Examples
     agrisense simulate --hours 48 --scenario hot_day --log decisions.txt
     agrisense simulate --hours 24 --no-control --fans-daytime   # open loop, Phase 1 style
     agrisense scenarios
+    agrisense ml all [--quick]                                 # Phase 4: train, evaluate, optimise
 """
 
 from __future__ import annotations
@@ -136,6 +137,25 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ml(args: argparse.Namespace) -> int:
+    import json
+
+    from agrisense_core.intelligence import pipeline
+
+    ml_dir = Path(args.ml_dir) if args.ml_dir else pipeline.DEFAULT_ML_DIR
+    report_json = ml_dir / "reports" / "phase4_results.json"
+    results = json.loads(report_json.read_text(encoding="utf-8")) if report_json.exists() else {}
+    kw = {"ml_dir": ml_dir, "quick": args.quick, "workers": args.workers, "config_dir": args.config}
+    if args.ml_cmd in ("train", "all"):
+        results.update(pipeline.train(**kw))
+    if args.ml_cmd in ("optimize", "all"):
+        results["optimisation"] = pipeline.tune(**kw)
+    md = pipeline.write_report(ml_dir, results)
+    print(f"report written to {md}")
+    print(md.read_text(encoding="utf-8"))
+    return 0
+
+
 def cmd_scenarios(_: argparse.Namespace) -> int:
     for s in CATALOG.values():
         dur = "instant" if s.default_duration_h == 0 else f"{s.default_duration_h:g} h"
@@ -168,6 +188,22 @@ def main(argv: list[str] | None = None) -> int:
         help="with --no-control: run fans 07:00-18:00 on a fixed schedule",
     )
     sim.set_defaults(func=cmd_simulate)
+
+    ml = sub.add_parser("ml", help="Phase 4: datasets, model training, evaluation, optimisation")
+    ml_sub = ml.add_subparsers(dest="ml_cmd", required=True)
+    for name, text in (
+        ("train", "simulate datasets, train and evaluate the models"),
+        ("optimize", "tune controller setpoints in simulation"),
+        ("all", "train + optimize, then write the report"),
+    ):
+        p = ml_sub.add_parser(name, help=text)
+        p.add_argument("--quick", action="store_true", help="small smoke-test run")
+        p.add_argument(
+            "--workers", type=int, default=None, help="parallel simulations (default: cores - 1)"
+        )
+        p.add_argument("--ml-dir", type=str, default=None, help="output folder (default: repo ml/)")
+        p.add_argument("--config", type=str, default=None, help="directory with YAML profiles")
+        p.set_defaults(func=cmd_ml)
 
     sc = sub.add_parser("scenarios", help="list available scenarios")
     sc.set_defaults(func=cmd_scenarios)

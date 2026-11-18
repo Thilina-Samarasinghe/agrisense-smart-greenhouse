@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from agrisense_core import __version__
-from app.api import control, data, health, sim
+from app.api import control, data, health, intelligence, sim
 from app.config import Settings, settings
 from app.db.session import Database
 from app.services.simulation import SimulationService
@@ -43,7 +43,7 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    for module in (health, sim, control, data):
+    for module in (health, sim, control, data, intelligence):
         app.include_router(module.router, prefix="/api")
     app.include_router(live.router)
     return app

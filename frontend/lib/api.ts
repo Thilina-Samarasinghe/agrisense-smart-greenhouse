@@ -127,6 +127,13 @@ export type LiveState = {
   alerts: Alert[];
   decisions: Decision[];
   scenarios: ActiveScenario[];
+  storage?: {
+    remote: boolean;
+    pending_rows: number;
+    writing: boolean;
+    last_write: { rows: number; seconds: number; at: string | null };
+    write_errors: number;
+  };
 };
 
 export type ZonePoint = {
@@ -240,3 +247,77 @@ export async function getHealth(): Promise<Health | null> {
     return null;
   }
 }
+
+// ------------------------------------------------------------------ Phase 4 intelligence
+
+export type IntelStatus = {
+  models_loaded: boolean;
+  trained_at: string | null;
+  history_minutes: number;
+  how_to_train: string | null;
+  report_available: boolean;
+};
+
+export type Anomaly = {
+  channel: string;
+  zone_id: string;
+  quantity: string;
+  value: number | null;
+  residual: number | null;
+  virtual_score: number | null;
+  supervised_probability: number | null;
+  rule_flag: boolean;
+  flagged: boolean;
+  warming_up: boolean;
+};
+
+export type IrrigationForecast = {
+  zone_id: string;
+  irrigating_now: boolean;
+  hours_model: number | null;
+  hours_straight_line: number | null;
+  vwc_pct: number | null;
+  start_pct: number;
+};
+
+export type Advice = {
+  severity: "critical" | "warning" | "info";
+  zone_id: string | null;
+  title: string;
+  detail: string;
+  evidence: string;
+};
+
+type MethodResult = {
+  precision: number;
+  recall: number;
+  f1: number;
+  event_recall: number;
+  false_alarms_per_channel_day: number;
+  by_fault: Record<string, { events: number; detected: number; recall: number | null; median_delay_min: number | null }>;
+};
+
+export type Phase4Report = {
+  anomaly?: { channel_days_healthy: number; methods: Record<string, MethodResult> };
+  forecast?: {
+    test_minutes: number;
+    model_mae_h: number;
+    baseline_mae_h: number;
+    buckets: Record<string, { minutes: number; model_mae_h: number; baseline_mae_h: number }>;
+    model_within_6h_precision: number;
+    model_within_6h_recall: number;
+    baseline_within_6h_precision: number;
+    baseline_within_6h_recall: number;
+  };
+  optimisation?: {
+    candidates: number;
+    validation: {
+      seeds: number[];
+      days: number;
+      default: Record<string, number>;
+      tuned: Record<string, number>;
+      change_pct: Record<string, number>;
+    };
+    search: { default: { params: Record<string, number> }; best: { params: Record<string, number> } };
+  };
+};

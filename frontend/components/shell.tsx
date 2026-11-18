@@ -20,6 +20,7 @@ function Nav() {
     ...(config?.zones ?? []).map((z) => ({ href: `/zones/${z.id}`, label: `${z.id} · ${z.crop_name}` })),
     { href: "/scenarios", label: "Scenarios" },
     { href: "/analytics", label: "Analytics" },
+    { href: "/insights", label: "Insights" },
     { href: "/events", label: "Events" },
   ];
   return (

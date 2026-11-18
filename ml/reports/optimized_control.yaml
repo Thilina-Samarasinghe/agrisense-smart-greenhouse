@@ -1,0 +1,10 @@
+# Controller setpoints found by simulation-based optimisation (agrisense ml optimize).
+# Merge the `climate` values into backend/agrisense_core/profiles/control.yaml to use them.
+climate:
+  humidity_band_pct: 5.25
+  mist_cooling_offset_c: 2.21
+  stage1_level: 0.46
+  stage2_offset_c: 2.46
+  temp_band_c: 2.76
+  vent_benefit_off_night_c: 0.42
+  vent_benefit_on_c: 2.37
